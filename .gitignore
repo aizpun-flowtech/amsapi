@@ -1,0 +1,12 @@
+# Bauergebnisse und Zwischenstaende
+build/
+*.ppu
+*.o
+*.a
+*.compiled
+samples/*/*.bpl
+samples/*/*.o
+samples/*/lib*.a
+
+# Werkzeuge
+tools/__pycache__/
