@@ -56,6 +56,7 @@ function AmsBindCore: Boolean;      { rtl: Classes + TypInfo   }
 function AmsBindProps: Boolean;     { rtl: RTTI der properties }
 function AmsBindVcl: Boolean;       { vcl: FindControl, Bitmap }
 function AmsBindBars: Boolean;      { afnUiCore: dxBar         }
+function AmsBindFactory: Boolean;   { rtl+vcl: Elemente anlegen }
 function AmsBindAfn: Boolean;       { afnComponentsRt: Actions }
 function AmsBindWorkflow: Boolean;  { afnBu: WorkflowEngine    }
 
@@ -96,12 +97,26 @@ var
   hcFindControl: TFnFindControl = nil;
   hcSetAlphaFormat: TFnSetAlphaFormat = nil;
 
+  { ------------------------- rtl + vcl, Gruppe "Factory" (Elemente anlegen)
+    Die beiden Klassenzeiger werden nicht aufgerufen. Sie werden gebraucht,
+    um im VMT den Slot der virtuellen Methode zu SUCHEN: Konstruktor und
+    TControl.SetParent muessen virtuell gerufen werden, sonst entsteht ein
+    halb gebautes Objekt bzw. ein Bedienelement ohne Fenster. Welcher Slot
+    das ist, haengt an der Delphi-Version - deshalb gesucht statt geraten
+    (AmsVmtIndexOf). }
+  hcComponentClass: Pointer = nil;          { TComponent          }
+  hcComponentCreate: Pointer = nil;         { TComponent.Create   }
+  hcControlClass: Pointer = nil;            { TControl            }
+  hcControlSetParent: Pointer = nil;        { TControl.SetParent  }
+  hcObjectFree: TFnObjectFree = nil;        { TObject.Free        }
+
   { ------------------------------------------------------- afnUiCore.bpl }
   hcBarAddItem: TFnBarAddItem = nil;
   hcBarGetItemLinks: TFnBarGetItemLinks = nil;
   hcBarLinksAdd: TFnBarLinksAdd = nil;
   hcLinkGetItem: TFnLinkGetItem = nil;
   hcItemDirectClick: TFnItemDirectClick = nil;
+  hcBarGetBarManager: TFnGetBarManager = nil;
 
   { -------------------------------------------------- afnComponentsRt.bpl }
   hcActionManagerClass: Pointer = nil;
@@ -169,6 +184,7 @@ var
   gBars: Integer = 0;
   gAfn: Integer = 0;
   gWorkflow: Integer = 0;
+  gFactory: Integer = 0;
 
 { "rtl230.bpl" -> "230". Liefert '' wenn der Name nicht passt. }
 function SuffixOfRtl(const AName: string): string;
@@ -387,6 +403,34 @@ begin
   AmsLog('Bind Vcl: ' + BoolToStr(Result, True));
 end;
 
+{ Elemente anlegen: der virtuelle Konstruktor aus rtl und TControl.SetParent
+  aus vcl. Beide werden ueber ihren VMT-Slot gerufen; hier wird nur die
+  ADRESSE geholt, mit der sich der Slot spaeter suchen laesst. }
+function AmsBindFactory: Boolean;
+begin
+  if gFactory <> 0 then Exit(gFactory = 1);
+  if not (AmsBindCore and AmsBindVcl) then
+  begin
+    gFactory := -1;
+    Exit(False);
+  end;
+
+  hcComponentClass := AmsSym(MOD_RTL, '@System@Classes@TComponent@');
+  { Konstruktoren tragen im Package den Namen "$bctr", nicht "Create". }
+  hcComponentCreate := AmsSym(MOD_RTL,
+    '@System@Classes@TComponent@$bctr$qqrp25System@Classes@TComponent');
+  hcObjectFree := TFnObjectFree(AmsSym(MOD_RTL, '@System@TObject@Free$qqrv'));
+  hcControlClass := AmsSym(MOD_VCL, '@Vcl@Controls@TControl@');
+  hcControlSetParent := AmsSym(MOD_VCL,
+    '@Vcl@Controls@TControl@SetParent$qqrp24Vcl@Controls@TWinControl');
+
+  Result := (hcComponentClass <> nil) and (hcComponentCreate <> nil) and
+            Assigned(hcObjectFree) and (hcControlClass <> nil) and
+            (hcControlSetParent <> nil);
+  if Result then gFactory := 1 else gFactory := -1;
+  AmsLog('Bind Factory (rtl+vcl): ' + BoolToStr(Result, True));
+end;
+
 function AmsBindBars: Boolean;
 begin
   if gBars <> 0 then Exit(gBars = 1);
@@ -400,6 +444,10 @@ begin
     '@Dxbar@TdxBarItemLink@GetItem$qqrv'));
   hcItemDirectClick := TFnItemDirectClick(AmsSym(MOD_BARS,
     '@Dxbar@TdxBarItem@DirectClick$qqrv'));
+  { Nur fuer das Anlegen eigener Ribbon-Elemente noetig; sein Fehlen darf die
+    Gruppe nicht scheitern lassen. }
+  hcBarGetBarManager := TFnGetBarManager(AmsSym(MOD_BARS,
+    '@Dxbar@TdxBar@GetBarManager$qqrv'));
   Result := Assigned(hcBarAddItem) and Assigned(hcBarGetItemLinks) and
             Assigned(hcBarLinksAdd) and Assigned(hcLinkGetItem) and
             Assigned(hcItemDirectClick);
@@ -456,6 +504,7 @@ begin
   Result := AmsBindCore;
   Result := AmsBindVcl and Result;
   AmsBindProps;
+  AmsBindFactory;
   AmsBindBars;
   AmsBindAfn;
   AmsBindWorkflow;
@@ -477,12 +526,13 @@ begin
                    '  Core (rtl) .......... %s' + sLineBreak +
                    '  Props (rtl RTTI) .... %s' + sLineBreak +
                    '  Vcl ................. %s' + sLineBreak +
+                   '  Factory (rtl+vcl) ... %s' + sLineBreak +
                    '  Bars (afnUiCore) .... %s' + sLineBreak +
                    '  Afn (Actions) ....... %s' + sLineBreak +
                    '  Workflow (afnBu) .... %s',
                    [AMS_API_VERSION, AmsHostSuffix, AmsHostDelphiName,
-                    State(gCore), State(gProps), State(gVcl), State(gBars),
-                    State(gAfn), State(gWorkflow)]);
+                    State(gCore), State(gProps), State(gVcl), State(gFactory),
+                    State(gBars), State(gAfn), State(gWorkflow)]);
 end;
 
 end.

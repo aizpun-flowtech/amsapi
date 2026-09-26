@@ -19,7 +19,7 @@ uses
   Windows, SysUtils, Classes, FPImage, FPWritePNG,
   AmsApi.Types, AmsApi.Log, AmsApi.Ini, AmsApi.Strings, AmsApi.Glyphs,
   AmsApi.Bind, AmsApi.Props, AmsApi.Ui, AmsApi.Hook, AmsApi.Trace,
-  AmsApi.Recorder;
+  AmsApi.Recorder, AmsApi.Rtti, AmsApi.Factory;
 
 var
   gRun: Integer = 0;
@@ -755,6 +755,101 @@ begin
 end;
 {$WARN SYMBOL_DEPRECATED ON}
 
+{ ------------------------------------------------- Klassenkette und VMT ---- }
+
+procedure TestClassChain;
+begin
+  Section('Klassenkette und VMT-Slots');
+  { Alles hier greift in fremden Speicher. Ohne Host gibt es keinen - und
+    genau dann darf nichts abstuerzen, sondern es kommt ein leerer Wert. }
+  Check('Klasse von nil', AmsClassOf(nil) = nil);
+  CheckEq('Klassenname von nil', '', AmsClassNameOf(nil));
+  Check('Elternklasse von nil', AmsClassParent(nil) = nil);
+  CheckEq('Instanzgroesse von nil', '0', IntToStr(AmsInstanceSize(nil)));
+  Check('Abstammung von nil', not AmsClassInheritsFrom(nil, 'TComponent'));
+  Check('Abstammung eines Unsinnszeigers',
+        not AmsInheritsFrom(Pointer($DEADBEEF), 'TComponent'));
+  Check('leerer Klassenname passt auf nichts',
+        not AmsClassInheritsFrom(Pointer($DEADBEEF), ''));
+
+  CheckEq('Slotsuche ohne Klasse', '-1',
+          IntToStr(AmsVmtIndexOf(nil, Pointer($1000))));
+  CheckEq('Slotsuche ohne Methode', '-1',
+          IntToStr(AmsVmtIndexOf(Pointer($1000), nil)));
+  CheckEq('Slotsuche in fremdem Speicher', '-1',
+          IntToStr(AmsVmtIndexOf(Pointer($DEADBEEF), Pointer($BAADF00D))));
+
+  Check('Feldzugriff einer Eigenschaft auf nil',
+        not AmsPropWritesField(nil, 'Font'));
+end;
+
+{ ------------------------------------------------- Elemente anlegen -------- }
+
+procedure TestFactoryWithoutHost;
+var
+  Obj: Pointer;
+  Opt: TAmsNewOptions;
+  Dest: TStringList;
+begin
+  Section('Elemente anlegen ohne AMS (darf nicht abstuerzen)');
+
+  { Ohne Host fehlen Symbole UND Konstruktorslot. Verlangt ist: nichts
+    anlegen, und sagen warum. Ein geratener Slot waere ein Sprung in eine
+    beliebige fremde Methode - deshalb gibt es hier keinen Notwert. }
+  Check('nicht bereit ohne Host', not AmsFactoryReady);
+  Check('mit Begruendung', AmsLastError <> '', AmsLastError);
+  CheckEq('kein Konstruktorslot', '-1', IntToStr(AmsCtorSlot));
+  CheckEq('kein SetParent-Slot', '-1', IntToStr(AmsSetParentSlot));
+
+  Check('Klasse ohne Namen wird abgelehnt', AmsResolveClass('  ') = nil);
+  Check('mit Begruendung', AmsLastError <> '', AmsLastError);
+  Check('unbekannte Klasse wird abgelehnt', AmsResolveClass('TButton') = nil);
+
+  Check('Konstruktor ohne Klasse', AmsCreateComponent(nil, nil) = nil);
+  { Ein Zeiger, der keine Klasse ist, darf nicht durchrutschen: der
+    Konstruktorslot gilt nur unterhalb von TComponent. }
+  Check('Konstruktor auf einer Nichtklasse',
+        AmsCreateComponent(Pointer($DEADBEEF), nil) = nil);
+
+  Opt := AmsNewDefaults;
+  CheckEq('Vorbelegung: keine Klasse', '', Opt.ClassName);
+  Check('Vorbelegung: kein Ziel', Opt.Target = nil);
+  Check('Vorbelegung: Lage unveraendert', Opt.Left = AmsKeep);
+  Opt.ClassName := 'TButton';
+  Check('Anlegen ohne Host scheitert', not AmsNewElement(Opt, Obj));
+  Check('und liefert nichts', Obj = nil);
+  Check('mit Begruendung', AmsLastError <> '', AmsLastError);
+
+  Check('Einhaengen ohne Element', not AmsAttachElement(nil, nil));
+  Check('Einhaengen ohne Ziel', not AmsAttachElement(Pointer($1000), nil));
+  Check('Umhaengen ohne Element', not AmsMoveElement(nil, nil));
+
+  Check('Klonen ohne Vorlage', not AmsCloneElement(nil, nil, Obj));
+  Check('mit Begruendung', AmsLastError <> '', AmsLastError);
+  CheckEq('Kopieren ohne Quelle', '0', IntToStr(AmsCopyProps(nil, nil, True)));
+
+  { Fremde Elemente werden hier nicht zerstoert - das ist die wichtigste
+    Zusage dieser Unit. }
+  Check('Entfernen ohne Element', not AmsRemoveElement(nil));
+  Check('fremdes Element wird nicht entfernt',
+        not AmsRemoveElement(Pointer($DEADBEEF)));
+  Check('mit Begruendung', Pos('nicht von diesem Plugin', AmsLastError) > 0,
+        AmsLastError);
+  Check('nichts angelegt', not AmsIsSpawned(Pointer($DEADBEEF)));
+  CheckEq('Verzeichnis leer', '0', IntToStr(AmsSpawnCount));
+
+  Dest := TStringList.Create;
+  try
+    AmsDumpSpawned(Dest);
+    Check('Verzeichnisausgabe hat eine Ueberschrift', Dest.Count > 0);
+  finally
+    Dest.Free;
+  end;
+
+  { Laeuft beim Entladen IMMER - auch wenn nie etwas angelegt wurde. }
+  CheckEq('Abraeumen ohne Angelegtes', '0', IntToStr(AmsFactoryRelease));
+end;
+
 begin
   gTmp := IncludeTrailingPathDelimiter(GetTempDir);
   AmsSetLogFile(gTmp + 'amsapi_unittests.log');
@@ -771,6 +866,8 @@ begin
   TestColors;
   TestPatchLine;
   TestUiWithoutHost;
+  TestClassChain;
+  TestFactoryWithoutHost;
   TestTrace;
   TestHookDecoder;
   TestHookThunk;

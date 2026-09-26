@@ -1,9 +1,16 @@
 { ============================================================================
   finder.inc - Suchfenster fuer vorhandene AMS-Elemente
 
-  Ein Fenster im laufenden AMS: oben ein Suchfeld, links die Treffer, rechts
+  Ein Fenster im laufenden AMS: oben ein Suchfeld, darunter die Treffer und
   ihre Eigenschaften, unten die fertige Patchzeile zum Kopieren oder gleich
   Ausprobieren.
+
+  Die Zeile darueber baut: "Merken" nimmt den gewaehlten Treffer als
+  Vorlage, "Klonen" setzt eine Kopie davon in den gerade gewaehlten
+  Container (ohne Vorlage: eine Kopie neben das Original), "Neu" legt ein
+  Element der eingetragenen Klasse an, "Entfernen" nimmt zurueck, was dieses
+  Plugin angelegt hat. Alles davon verschwindet spaetestens beim Entladen -
+  die Arbeit macht AmsApi.Factory, hier steht nur die Bedienung.
 
   Reines Win32. Die VCL des Hosts steht einem FPC-Plugin nicht zur Verfuegung
   (getrennte Heaps, fremde RTL) - CreateWindowExW mit den Standardklassen
@@ -33,6 +40,13 @@ const
   IDC_UNDOBTN = 108;
   IDC_STATUS  = 109;
   IDC_SHOW    = 110;
+  IDC_CLASS   = 111;
+  IDC_TEXT    = 112;
+  IDC_EVENTS  = 113;
+  IDC_KEEP    = 114;
+  IDC_CLONE   = 115;
+  IDC_NEW     = 116;
+  IDC_DELETE  = 117;
 
   MARGIN = 8;
   ROW_H = 24;
@@ -40,6 +54,15 @@ const
   { "Zuruecknehmen" ist laenger als die anderen Beschriftungen. }
   UNDO_W = 124;
   CHECK_W = 150;
+  EVENT_W = 140;
+  { Breiteste Zeile ist die zum Bauen: vier Knoepfe, ein Haken und zwei
+    Felder. Darunter faengt es an, sich zu ueberdecken. }
+  MIN_W = 800;
+  MIN_H = 460;
+
+  { Beschriftung IM leeren Feld (Vista aufwaerts). Spart zwei
+    Beschriftungsfelder und sagt trotzdem, was hineingehoert. }
+  EM_SETCUEBANNER = $1501;
 
 var
   gFinder: HWND = 0;
@@ -49,6 +72,9 @@ var
   gPropList: HWND = 0;
   gPatchBox: HWND = 0;
   gStatusBar: HWND = 0;
+  gClassBox: HWND = 0;
+  gTextBox: HWND = 0;
+  gEventsBox: HWND = 0;
   gGuiFont: HFONT = 0;
   gFixedFont: HFONT = 0;
   gOldEditProc: Pointer = nil;
@@ -60,6 +86,10 @@ var
   gPropCount: Integer = 0;
   gCurrent: Integer = -1;
   gMaxHits: Integer = 500;
+  { Vorlage zum Klonen. Sie ueberlebt die naechste Suche - genau dafuer ist
+    sie da: Vorlage merken, Ziel suchen, klonen. }
+  gTemplate: TAmsElement;
+  gHasTemplate: Boolean = False;
   { Der Klassenname muss die Registrierung ueberleben: WNDCLASSW haelt nur
     einen Zeiger, und ein temporaerer WideString waere am Ende der Zuweisung
     schon wieder weg. }
@@ -92,6 +122,15 @@ begin
   if AWnd <> 0 then SendMessageW(AWnd, LB_RESETCONTENT, 0, 0);
 end;
 
+procedure SetCue(AWnd: HWND; const AText: string);
+var
+  W: WideString;
+begin
+  if AWnd = 0 then Exit;
+  W := WideString(AText);
+  SendMessageW(AWnd, EM_SETCUEBANNER, 1, LPARAM(PWideChar(W)));
+end;
+
 procedure ListAdd(AWnd: HWND; const AText: string);
 var
   W: WideString;
@@ -116,6 +155,15 @@ begin
   if AElement.IsBarItem then Result := 'Ribbon'
   else if AElement.IsControl then Result := 'Control'
   else Result := '-';
+end;
+
+{ Eine Zeile der Trefferliste. An drei Stellen gebraucht - und drei Stellen
+  mit demselben Format sind zwei zu viel. }
+function HitLine(const AElement: TAmsElement): string;
+begin
+  Result := Format('%-28s %-26s %-7s %s',
+                   [AElement.Name, AElement.ClassName, ArtOf(AElement),
+                    AElement.Caption]);
 end;
 
 procedure CopyToClipboard(const AText: string);
@@ -186,8 +234,7 @@ begin
     SetLength(gHits, 1);
     gHits[0] := E;
     gHitCount := 1;
-    ListAdd(gElemList, Format('%-28s %-26s %-7s %s',
-                              [E.Name, E.ClassName, ArtOf(E), E.Caption]));
+    ListAdd(gElemList, HitLine(E));
     SendMessageW(gElemList, LB_SETCURSEL, 0, 0);
     LoadProps(0);
     Exit;
@@ -216,9 +263,7 @@ begin
     if gHitCount >= gMaxHits then Break;
     SetLength(gHits, gHitCount + 1);
     gHits[gHitCount] := All[i];
-    ListAdd(gElemList, Format('%-28s %-26s %-7s %s',
-                              [All[i].Name, All[i].ClassName, ArtOf(All[i]),
-                               All[i].Caption]));
+    ListAdd(gElemList, HitLine(All[i]));
     Inc(gHitCount);
   end;
 
@@ -343,6 +388,157 @@ begin
   end;
 end;
 
+{ ----------------------------------------------------------------- Bauen -- }
+
+{ Der gewaehlte Treffer, aber nur wenn es ihn noch gibt. }
+function CurrentHit(out AElement: TAmsElement): Boolean;
+begin
+  Result := False;
+  if (gCurrent < 0) or (gCurrent >= gHitCount) then
+  begin
+    Status('Erst einen Treffer in der oberen Liste anklicken.');
+    Exit;
+  end;
+  AElement := gHits[gCurrent];
+  if not AmsElementAlive(AElement) then
+  begin
+    Status('Dieses Element gibt es nicht mehr - neu suchen.');
+    Exit;
+  end;
+  Result := True;
+end;
+
+{ Ein neu entstandenes Element hinten anhaengen und auswaehlen: so steht man
+  danach auf dem Ergebnis und sieht sofort seine Eigenschaften. }
+procedure AddHit(const AElement: TAmsElement);
+begin
+  SetLength(gHits, gHitCount + 1);
+  gHits[gHitCount] := AElement;
+  ListAdd(gElemList, HitLine(AElement));
+  Inc(gHitCount);
+  SendMessageW(gElemList, LB_SETCURSEL, gHitCount - 1, 0);
+  LoadProps(gHitCount - 1);
+end;
+
+{ Merken: der gewaehlte Treffer wird zur Vorlage. Klasse und Beschriftung
+  wandern in die Felder - damit ist auch "Neu" gleich sinnvoll gefuellt. }
+procedure KeepTemplate;
+var
+  E: TAmsElement;
+begin
+  if not CurrentHit(E) then Exit;
+  gTemplate := E;
+  gHasTemplate := True;
+  SetText(gClassBox, E.ClassName);
+  SetText(gTextBox, E.Caption);
+  Status(Format('Vorlage: %s [%s]. Jetzt das Ziel anklicken und "Klonen".',
+                [E.Path, E.ClassName]));
+end;
+
+{ Klonen: die Vorlage in den gewaehlten Container. Ohne Vorlage ist der
+  gewaehlte Treffer selbst gemeint - dann entsteht eine Kopie daneben. }
+procedure CloneCurrent;
+var
+  Cur, Src, Made: TAmsElement;
+  Dest, Clone: Pointer;
+  Events: Boolean;
+begin
+  if not CurrentHit(Cur) then Exit;
+
+  if gHasTemplate and AmsElementAlive(gTemplate) and
+     (gTemplate.Obj <> Cur.Obj) then
+  begin
+    Src := gTemplate;
+    Dest := Cur.Obj;
+  end
+  else
+  begin
+    Src := Cur;
+    Dest := nil;          { nil heisst: dorthin, wo das Original sitzt }
+  end;
+
+  Events := SendMessageW(gEventsBox, BM_GETCHECK, 0, 0) = BST_CHECKED;
+  if not AmsCloneElementEx(Src.Obj, Dest, '', Events, AmsKeep, AmsKeep,
+                           Clone) then
+  begin
+    Status('Nicht geklont: ' + AmsLastError);
+    Exit;
+  end;
+
+  Made := AmsElementOf(Clone);
+  AddHit(Made);
+  if Dest = nil then
+    Status(Format('Kopie von "%s" daneben angelegt: %s. "Entfernen" nimmt ' +
+                  'sie zurueck, das Entladen ebenfalls.',
+                  [Ident(Src), Made.Path]))
+  else
+    Status(Format('"%s" nach %s kopiert: %s. "Entfernen" nimmt es zurueck, ' +
+                  'das Entladen ebenfalls.',
+                  [Ident(Src), Ident(Cur), Made.Path]));
+end;
+
+{ Neu: ein Element der eingetragenen Klasse in den gewaehlten Container. }
+procedure NewFromFields;
+var
+  Opt: TAmsNewOptions;
+  Target: TAmsElement;
+  Obj: Pointer;
+begin
+  Opt := AmsNewDefaults;
+  Opt.ClassName := Trim(GetText(gClassBox));
+  if Opt.ClassName = '' then
+  begin
+    Status('Erst eine Klasse eintragen - TButton, TPanel, TEdit, ' +
+           'TdxBarLargeButton. "Merken" traegt die des gewaehlten Elements ' +
+           'ein.');
+    Exit;
+  end;
+  if not CurrentHit(Target) then Exit;
+
+  Opt.Caption := Trim(GetText(gTextBox));
+  Opt.Target := Target.Obj;
+  { Ein Ziel, das selbst nichts aufnehmen kann, ist als "dorthin, wo das
+    hier sitzt" gemeint. }
+  if not AmsIsContainer(Target.Obj) then
+    Opt.Target := AmsParentOf(Target.Obj);
+  if Opt.Target = nil then
+  begin
+    Status('Kein Container: ' + AmsLastError +
+           '  Ein Formular, ein Panel, eine Registerkarte - oder fuer ein ' +
+           'Ribbon-Element eine Leiste (Klasse TdxBar suchen).');
+    Exit;
+  end;
+
+  if not AmsNewElement(Opt, Obj) then
+  begin
+    Status('Nicht angelegt: ' + AmsLastError);
+    Exit;
+  end;
+  AddHit(AmsElementOf(Obj));
+  Status(Format('%s angelegt in %s. Lage und Aussehen unten ueber die ' +
+                'Patchzeile.',
+                [Opt.ClassName, AmsElementOf(Opt.Target).Path]));
+end;
+
+{ Entfernen: nur, was dieses Plugin selbst angelegt hat. Ein Element des
+  Hosts wird von hier aus nicht zerstoert - das sagt AmsApi.Factory ab. }
+procedure RemoveCurrent;
+var
+  E: TAmsElement;
+begin
+  if not CurrentHit(E) then Exit;
+  if AmsRemoveElement(E.Obj) then
+  begin
+    ListClear(gPropList);
+    gPropCount := 0;
+    if gHasTemplate and (gTemplate.Obj = E.Obj) then gHasTemplate := False;
+    Status(Format('"%s" entfernt. Die Trefferliste ist an dieser Stelle ' +
+                  'jetzt veraltet - neu suchen.', [Ident(E)]));
+  end
+  else
+    Status('Nicht entfernt: ' + AmsLastError);
+end;
+
 procedure ApplyPatch;
 var
   Line: string;
@@ -374,7 +570,7 @@ end;
 
 procedure Layout(AWidth, AHeight: Integer);
 var
-  Top, ListTop, Avail, ElemH, PropH, Bottom, X, W: Integer;
+  Top, ListTop, Avail, ElemH, PropH, Bottom, X, W, CW: Integer;
 begin
   if gFinder = 0 then Exit;
   Top := MARGIN;
@@ -394,9 +590,10 @@ begin
   Inc(Top, ROW_H + 4);
   MoveWindow(gStatusBar, MARGIN, Top, AWidth - 2 * MARGIN, 18, True);
 
-  { Mitte: zwei Listen, oben Treffer, unten Eigenschaften }
+  { Mitte: zwei Listen, oben Treffer, unten Eigenschaften. Darunter liegen
+    jetzt ZWEI Zeilen - Bauen und Patchen. }
   ListTop := Top + 22;
-  Bottom := AHeight - MARGIN - ROW_H - 6;
+  Bottom := AHeight - MARGIN - 2 * ROW_H - 12;
   Avail := Bottom - ListTop - 6;
   if Avail < 80 then Avail := 80;
   ElemH := Avail div 2;
@@ -405,7 +602,29 @@ begin
   MoveWindow(gPropList, MARGIN, ListTop + ElemH + 6, AWidth - 2 * MARGIN,
              PropH, True);
 
-  { Unten: Patchzeile und drei Knoepfe, wieder von rechts. }
+  { Vorletzte Zeile: bauen. Vier Knoepfe und der Haken von rechts, den Rest
+    teilen sich Klasse und Beschriftung. }
+  Top := AHeight - MARGIN - 2 * ROW_H - 6;
+  X := AWidth - MARGIN - BTN_W;
+  MoveWindow(GetDlgItem(gFinder, IDC_DELETE), X, Top, BTN_W, ROW_H, True);
+  Dec(X, MARGIN + BTN_W);
+  MoveWindow(GetDlgItem(gFinder, IDC_NEW), X, Top, BTN_W, ROW_H, True);
+  Dec(X, MARGIN + BTN_W);
+  MoveWindow(GetDlgItem(gFinder, IDC_CLONE), X, Top, BTN_W, ROW_H, True);
+  Dec(X, MARGIN + BTN_W);
+  MoveWindow(GetDlgItem(gFinder, IDC_KEEP), X, Top, BTN_W, ROW_H, True);
+  Dec(X, MARGIN + EVENT_W);
+  MoveWindow(gEventsBox, X, Top + 3, EVENT_W, ROW_H, True);
+
+  W := X - 2 * MARGIN;
+  if W < 148 then W := 148;
+  CW := W div 2;
+  if CW > 200 then CW := 200;
+  MoveWindow(gClassBox, MARGIN, Top, CW, ROW_H, True);
+  MoveWindow(gTextBox, MARGIN + CW + MARGIN, Top, W - CW - MARGIN, ROW_H,
+             True);
+
+  { Unten: Patchzeile und vier Knoepfe, wieder von rechts. }
   Top := AHeight - MARGIN - ROW_H;
   X := AWidth - MARGIN - UNDO_W;
   MoveWindow(GetDlgItem(gFinder, IDC_UNDOBTN), X, Top, UNDO_W, ROW_H, True);
@@ -459,6 +678,10 @@ begin
             IDC_COPY: CopyToClipboard(Trim(GetText(gPatchBox)));
             IDC_UNDOBTN: UndoAllChanges;
             IDC_SHOW: ShowCurrent;
+            IDC_KEEP: KeepTemplate;
+            IDC_CLONE: CloneCurrent;
+            IDC_NEW: NewFromFields;
+            IDC_DELETE: RemoveCurrent;
             IDC_ELEMS:
               case HIWORD(AWParam) of
                 LBN_SELCHANGE:
@@ -489,8 +712,8 @@ begin
       end;
     WM_GETMINMAXINFO:
       begin
-        PMinMaxInfo(ALParam)^.ptMinTrackSize.X := 700;
-        PMinMaxInfo(ALParam)^.ptMinTrackSize.Y := 420;
+        PMinMaxInfo(ALParam)^.ptMinTrackSize.X := MIN_W;
+        PMinMaxInfo(ALParam)^.ptMinTrackSize.Y := MIN_H;
         Exit(0);
       end;
     WM_CLOSE:
@@ -553,9 +776,9 @@ begin
       PWideChar(WideString('Consolas')));
 
   gFinder := CreateWindowExW(WS_EX_TOOLWINDOW, PWideChar(WideString(FINDER_CLASS)),
-    'AMS-Elemente suchen und patchen',
+    'AMS-Elemente suchen, patchen und bauen',
     WS_OVERLAPPEDWINDOW or WS_CLIPCHILDREN,
-    CW_USEDEFAULT, CW_USEDEFAULT, 980, 640, AOwner, 0, HInstance, nil);
+    CW_USEDEFAULT, CW_USEDEFAULT, 1040, 680, AOwner, 0, HInstance, nil);
   if gFinder = 0 then
   begin
     AmsLogFmt('Suchfenster konnte nicht erzeugt werden, Fehler %d',
@@ -569,7 +792,8 @@ begin
   gOnlyVisBox := MakeChild('BUTTON', 'nur Sichtbare',
     WS_TABSTOP or BS_AUTOCHECKBOX, IDC_ONLYVIS, False);
   gStatusBar := MakeChild('STATIC', 'Suchbegriff eingeben - Name, ' +
-    'Beschriftung oder Klasse. Leer = alles.', SS_LEFTNOWORDWRAP,
+    'Beschriftung oder Klasse. Leer = alles. Treffer anklicken, dann ' +
+    'patchen (unten) oder bauen (Merken/Klonen/Neu).', SS_LEFTNOWORDWRAP,
     IDC_STATUS, False);
   gElemList := MakeChild('LISTBOX', '',
     WS_BORDER or WS_VSCROLL or WS_HSCROLL or WS_TABSTOP or LBS_NOTIFY,
@@ -577,6 +801,17 @@ begin
   gPropList := MakeChild('LISTBOX', '',
     WS_BORDER or WS_VSCROLL or WS_HSCROLL or WS_TABSTOP or LBS_NOTIFY,
     IDC_PROPS, True);
+  gClassBox := MakeChild('EDIT', '',
+    WS_BORDER or WS_TABSTOP or ES_AUTOHSCROLL, IDC_CLASS, True);
+  gTextBox := MakeChild('EDIT', '',
+    WS_BORDER or WS_TABSTOP or ES_AUTOHSCROLL, IDC_TEXT, False);
+  gEventsBox := MakeChild('BUTTON', 'mit Ereignissen',
+    WS_TABSTOP or BS_AUTOCHECKBOX, IDC_EVENTS, False);
+  MakeChild('BUTTON', 'Merken', WS_TABSTOP, IDC_KEEP, False);
+  MakeChild('BUTTON', 'Klonen', WS_TABSTOP, IDC_CLONE, False);
+  MakeChild('BUTTON', 'Neu', WS_TABSTOP, IDC_NEW, False);
+  MakeChild('BUTTON', 'Entfernen', WS_TABSTOP, IDC_DELETE, False);
+
   gPatchBox := MakeChild('EDIT', '',
     WS_BORDER or WS_TABSTOP or ES_AUTOHSCROLL, IDC_PATCH, True);
   MakeChild('BUTTON', 'Zeigen', WS_TABSTOP, IDC_SHOW, False);
@@ -584,6 +819,9 @@ begin
   MakeChild('BUTTON', 'Kopieren', WS_TABSTOP, IDC_COPY, False);
   MakeChild('BUTTON', 'Zuruecknehmen', WS_TABSTOP, IDC_UNDOBTN, False);
 
+  SetCue(gClassBox, 'Klasse, z.B. TButton');
+  SetCue(gTextBox, 'Beschriftung des neuen Elements');
+  SetCue(gPatchBox, 'Element.Eigenschaft=Wert');
   SendMessageW(gOnlyVisBox, BM_SETCHECK, BST_CHECKED, 0);
 
   { Eingabetaste im Suchfeld abfangen. }
@@ -616,4 +854,8 @@ begin
   gHitCount := 0;
   gPropCount := 0;
   gCurrent := -1;
+  { Die Vorlage zeigt auf ein Element des Hosts - beim naechsten Oeffnen
+    muss es das nicht mehr geben. }
+  gHasTemplate := False;
+  gTemplate.Obj := nil;
 end;

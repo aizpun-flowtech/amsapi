@@ -131,7 +131,8 @@ pollt `AmsApi.Plugin` per `SetTimer` im Message-Loop des Hosts, bis
 | Konstruktoren | EAX = Klassenreferenz, **DL = Alloc-Flag**, ECX = 1. Parameter, Stack = 2. |
 | Interface-Rückgabe | über **verstecktes letztes Zeigerargument** — nicht über EAX! |
 | String-Rückgabe | ebenso verstecktes `@Result` |
-| VMT-Offsets | `vmtClassName` = **−56**, `vmtTypeInfo` = **−72**, `vmtIntfTable` = **−84** |
+| VMT-Offsets | `vmtClassName` = **−56**, `vmtTypeInfo` = **−72**, `vmtIntfTable` = **−84**, `vmtInstanceSize` = **−52**, `vmtParent` = **−48** |
+| `vmtParent` | zeigt auf einen **Zeiger auf** die Klasse (`PPClass`) — zweimal dereferenzieren |
 | `TComponent` | `FOwner` = **+4**, `FName` = **+8** |
 | `TGraphic.LoadFromFile` | VMT-Slot 21 = Offset **$54** |
 | `IInterface._Release` | Vtable-Offset **+08**, stdcall |
@@ -149,6 +150,79 @@ EAX = Instance, EDX = PropName, ECX = @Result
 und lässt *jeden* Namensvergleich fehlschlagen („er findet nix“).
 
 ---
+
+### Virtuelle Methoden des Hosts rufen — den Slot suchen, nicht raten
+
+Wer ein Element **anlegen** will, kommt an zwei virtuellen Methoden nicht
+vorbei:
+
+* dem **Konstruktor** — `TButton.Create` macht mehr als `TComponent.Create`;
+* **`TControl.SetParent`** — daran hängt bei `TWinControl` das Erzeugen des
+  Fensters. Die Basisfassung liefert ein Bedienelement ohne Fenster.
+
+Beide müssen also über das VMT **der Zielklasse** gerufen werden. Der Slot ist
+aber versionsabhängig, und ein falscher Slot ist ein Sprung in eine beliebige
+andere Methode. Deshalb wird er **gesucht**:
+
+1. Adresse der Basisfassung aus dem Package holen
+   (`@System@Classes@TComponent@$bctr$…`, `@Vcl@Controls@TControl@SetParent$…`).
+2. Klassenzeiger der Basisklasse holen — die exportiert das Package ebenfalls,
+   als Name mit `@` am Ende (`@System@Classes@TComponent@`).
+3. Im VMT dieser Klasse nach genau dieser Adresse suchen (`AmsVmtIndexOf`).
+   Die Suche endet, sobald ein Eintrag kein Codezeiger mehr sein kann —
+   hinter dem letzten virtuellen Eintrag stehen andere Daten.
+
+Gemessen an der Installation (Delphi 10 Seattle, `rtl230`/`vcl230`):
+
+| Methode | VMT-Offset |
+|---|---|
+| `TComponent.Create` (virtueller Konstruktor) | **60** |
+| `TControl.SetParent` | **140** |
+| `TPersistent.Assign` | 8 |
+| `TComponent.SetName` | 40 |
+
+> **Konstruktoren heißen im Package `$bctr`, nicht `Create`.** Die Suche nach
+> `TComponent@Create` liefert null Treffer; der Export ist
+> `@System@Classes@TComponent@$bctr$qqrp25System@Classes@TComponent`.
+> Entsprechend `$bdtr` für den Destruktor und `$bcctr`/`$bcdtr` für die
+> Klassenfassungen.
+
+Der Aufruf selbst, aus der Disassembly von `rtl230.bpl` gelesen:
+
+```
+TComponent.$bctr:
+  push ebx / esi / edi
+  test dl, dl              ; DL = Alloc-Flag
+  je   @@kein_new
+  call @System@@ClassCreate
+@@kein_new:
+  mov  esi, ecx            ; ECX = AOwner  (NICHT EDX - dort steckt das Flag)
+  mov  ebx, edx
+  mov  edi, eax            ; EAX = Klasse rein, Instanz raus
+  ...
+  call @System@Classes@TComponent@InsertComponent
+```
+
+Also `EAX` = Klassenzeiger, `DL` = 1, **`ECX` = erster Parameter**. Mit dem
+Besitzer in EDX bekäme der Konstruktor das Flag als Besitzer — und `Owner`
+wäre Müll. `tests\rttiprobe.lpr` legt deshalb gegen die echte RTL ein
+`TComponent` **mit Besitzer** an und prüft, dass `GetComponentCount` des
+Besitzers 1 ergibt.
+
+Freigegeben wird mit `@System@TObject@Free$qqrv`: der Speicher stammt aus dem
+Delphi-Heap, `FreeMem` von FPC bekäme ihn nie wieder los (Abschnitt 5).
+
+### Objekteigenschaften kopieren: Methode oder Feld?
+
+`TPropInfo.GetProc`/`SetProc` sagen in den obersten 8 Bit, **wie** zugegriffen
+wird: `$FF……` = unmittelbar ein Feld (untere 24 Bit = Offset im Objekt),
+`$FE……` = virtuelle Methode, alles andere = Adresse einer Methode.
+
+Das entscheidet beim Klonen: hinter einer Setzmethode steckt bei `Font`,
+`Glyph` und Konsorten ein `Assign`, also eine **echte Kopie**. Ein Feld würde
+nur den Zeiger übernehmen — zwei Elemente teilten sich eine Schrift, und das
+erste Freigeben reißt das zweite mit. `AmsPropWritesField` prüft das,
+`AmsCopyProps` lässt solche Eigenschaften aus.
 
 ### Delphi-RTTI: `TTypeInfo`, `TTypeData`, `TPropInfo`
 
@@ -254,6 +328,14 @@ in `AmsApi.Bind`. Namen exakt so, mit `$`.
 | `@System@Typinfo@GetObjectProp$qqrp14System@TObjectx20System@UnicodeStringp17System@TMetaClass` | `function(Obj, PropName, MinClass: Pointer): Pointer; register` |
 | `@System@@UStrClr$qqrpv` | `procedure(AStr: Pointer); register` |
 
+Dritte Staffel — Elemente anlegen (Gruppe `Factory`):
+
+| Mangled Name | Bedeutung |
+|---|---|
+| `@System@Classes@TComponent@` | Klassenzeiger `TComponent` — nur, um darin den Konstruktorslot zu finden |
+| `@System@Classes@TComponent@$bctr$qqrp25System@Classes@TComponent` | virtueller Konstruktor; `function(AClass: Pointer; AFlag: Byte; AOwner: Pointer): Pointer; register` |
+| `@System@TObject@Free$qqrv` | `procedure(Self: Pointer); register` — ruft den virtuellen Destruktor mit gesetztem Flag |
+
 Zweite Staffel — Typinformationen auslesen statt raten (Gruppe `Props`):
 
 | Mangled Name | Signatur (FPC-Typedef) |
@@ -294,6 +376,8 @@ Zusätzlich vom Testhost benutzt:
 |---|---|
 | `@Vcl@Controls@FindControl$qqrp6HWND__` | `function(H: HWND): Pointer; register` |
 | `@Vcl@Graphics@TBitmap@SetAlphaFormat$qqr25Vcl@Graphics@TAlphaFormat` | `procedure(Self: Pointer; V: Byte); register` |
+| `@Vcl@Controls@TControl@` | Klassenzeiger `TControl` — nur für die Slotsuche |
+| `@Vcl@Controls@TControl@SetParent$qqrp24Vcl@Controls@TWinControl` | `procedure(Self, AParent: Pointer); register`, **virtuell zu rufen** |
 
 ### `afnUiCore.bpl` (enthält DevExpress ExpressBars)
 
@@ -304,6 +388,7 @@ Zusätzlich vom Testhost benutzt:
 | `@Dxbar@TdxBarItemLinks@Add$qqrp16Dxbar@TdxBarItem` | `function(Self, AItem: Pointer): Pointer; register` |
 | `@Dxbar@TdxBarItemLink@GetItem$qqrv` | `function(Self: Pointer): Pointer; register` |
 | `@Dxbar@TdxBarItem@DirectClick$qqrv` | `procedure(Self: Pointer); register` |
+| `@Dxbar@TdxBar@GetBarManager$qqrv` | `function(Self: Pointer): Pointer; register` — der Manager, an dem ein neues Ribbon-Element anzumelden ist |
 
 ### `afnComponentsRt.bpl`
 
@@ -433,5 +518,7 @@ mehr — die Prüfung gehört ins Skript (`if (WItem == null) ...`).
 | Punkt | Stand |
 |---|---|
 | Kontextfreier Automatismus-Start | Bräuchte `TAutomatismus` per Delphi-Konstruktor (EAX=Klasse, DL=1, ECX=Owner, Session auf Stack) + `SelektionByIdent` + `LoadTaskIntoEngine`. Inline-Assembler, Absturzrisiko. **Nur gegen die Test-DB und nur bei echtem Bedarf.** |
-| Ribbon-Elemente beim Entladen entfernen | `AmsReleaseButtons` klemmt `OnClick` ab und setzt `Visible := ivNever`. Das `TdxBarItem` selbst gehört dem Host und wird nicht freigegeben — dafür wäre der Delphi-Destruktor nötig. |
+| Ribbon-Elemente beim Entladen entfernen | `AmsReleaseButtons` klemmt `OnClick` ab und setzt `Visible := ivNever`. Das `TdxBarItem` selbst gehört dem Host und wird nicht freigegeben. `AmsApi.Factory` geht für **selbst angelegte** Elemente einen Schritt weiter und ruft `TObject.Free`; scheitert der Destruktor, bleibt es beim Verstecken. Im laufenden AMS ist dieser Weg noch nicht gegengeprüft. |
+| Elemente anlegen und klonen im echten AMS | Konstruktoraufruf, Slotsuche und Klassenkette sind gegen die echte `rtl230.bpl`/`vcl230.bpl` belegt (`tests\rttiprobe.lpr`), das Einhängen über `SetParent` und `ItemLinks.Add` dagegen erst gegen die Symbole. Der erste Lauf in einem laufenden AMS steht aus. |
+| Container eines gezeichneten Elements | `AmsParentOf` geht über `GetParent` des Fensters. `TLabel`, `TSpeedButton` und dxBar-Elemente haben keins — dort muss der Zielcontainer benannt werden. Der Rückweg über das Feld `TControl.FParent` wäre möglich, ist aber nicht versionsfest und deshalb bewusst nicht gebaut. |
 | Andere Ribbon-Gruppen als „Benutzerdefiniert“ | Über `TAmsRibbonOptions.BarName` einstellbar, aber nur `bmbBenutzerdefiniert` ist im echten AMS verifiziert. |

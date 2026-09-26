@@ -22,7 +22,7 @@ program finderdemo;
 
 uses
   Windows, SysUtils, Classes,
-  AmsApi.Types, AmsApi.Log, AmsApi.Props, AmsApi.Ui;
+  AmsApi.Types, AmsApi.Log, AmsApi.Props, AmsApi.Ui, AmsApi.Factory;
 
 {$I ../samples/UiTweaks/finder.inc}
 
@@ -116,7 +116,7 @@ procedure Hide;
 begin
   if gFinder = 0 then Exit;
   ShowWindow(gFinder, SW_HIDE);
-  SetWindowPos(gFinder, 0, -3200, -3200, 980, 640,
+  SetWindowPos(gFinder, 0, -3200, -3200, 1040, 680,
                SWP_NOZORDER or SWP_NOACTIVATE);
 end;
 
@@ -130,6 +130,9 @@ begin
   Check('Trefferliste da', gElemList <> 0);
   Check('Eigenschaftsliste da', gPropList <> 0);
   Check('Patchfeld da', gPatchBox <> 0);
+  Check('Klassenfeld da', gClassBox <> 0);
+  Check('Beschriftungsfeld da', gTextBox <> 0);
+  Check('Haken fuer Ereignisse da', gEventsBox <> 0);
   Check('Statuszeile hat einen Text', GetText(gStatusBar) <> '');
   Check('Eingabetaste ist abgefangen', gOldEditProc <> nil);
   Pump(100);
@@ -165,10 +168,10 @@ end;
 
 procedure CheckNoOverlap(AWidth: Integer);
 var
-  Apply, Copy, Undo, Show, Go: HWND;
+  Apply, Copy, Undo, Show, Go, Keep, Clone, Neu, Del: HWND;
   Bad: Boolean;
 begin
-  SetWindowPos(gFinder, 0, -3200, -3200, AWidth, 640,
+  SetWindowPos(gFinder, 0, -3200, -3200, AWidth, 680,
                SWP_NOZORDER or SWP_NOACTIVATE);
   Pump(50);
   Apply := GetDlgItem(gFinder, IDC_APPLY);
@@ -176,6 +179,10 @@ begin
   Undo := GetDlgItem(gFinder, IDC_UNDOBTN);
   Show := GetDlgItem(gFinder, IDC_SHOW);
   Go := GetDlgItem(gFinder, IDC_GO);
+  Keep := GetDlgItem(gFinder, IDC_KEEP);
+  Clone := GetDlgItem(gFinder, IDC_CLONE);
+  Neu := GetDlgItem(gFinder, IDC_NEW);
+  Del := GetDlgItem(gFinder, IDC_DELETE);
 
   Bad := Overlap(Show, Apply, 'Zeigen/Anwenden') or
          Overlap(Apply, Copy, 'Anwenden/Kopieren') or
@@ -183,12 +190,34 @@ begin
          Overlap(Show, Copy, 'Zeigen/Kopieren') or
          Overlap(Apply, Undo, 'Anwenden/Zuruecknehmen') or
          Overlap(Show, Undo, 'Zeigen/Zuruecknehmen');
-  Check(Format('%d px breit: die vier Knoepfe liegen nebeneinander',
-               [AWidth]), not Bad);
+  Check(Format('%d px breit: die vier Knoepfe der Patchzeile liegen ' +
+               'nebeneinander', [AWidth]), not Bad);
+
+  { Dieselbe Falle noch einmal, eine Zeile hoeher: die Bauzeile ist die
+    engste im Fenster. }
+  Bad := Overlap(Keep, Clone, 'Merken/Klonen') or
+         Overlap(Clone, Neu, 'Klonen/Neu') or
+         Overlap(Neu, Del, 'Neu/Entfernen') or
+         Overlap(Keep, Neu, 'Merken/Neu') or
+         Overlap(Keep, Del, 'Merken/Entfernen') or
+         Overlap(Clone, Del, 'Klonen/Entfernen') or
+         Overlap(gEventsBox, Keep, 'Haken/Merken') or
+         Overlap(gClassBox, gTextBox, 'Klasse/Beschriftung') or
+         Overlap(gTextBox, gEventsBox, 'Beschriftung/Haken');
+  Check(Format('%d px breit: die Bauzeile liegt nebeneinander', [AWidth]),
+        not Bad);
+
   Bad := Overlap(gSearchBox, Go, 'Suchfeld/Suchen') or
          Overlap(Go, gOnlyVisBox, 'Suchen/Haken') or
          Overlap(gPatchBox, Show, 'Patchfeld/Zeigen') or
-         Overlap(gElemList, gPropList, 'Trefferliste/Eigenschaften');
+         Overlap(gElemList, gPropList, 'Trefferliste/Eigenschaften') or
+         { und die neue Zeile darf weder in die Liste darueber noch in die
+           Patchzeile darunter ragen }
+         Overlap(gPropList, gClassBox, 'Eigenschaften/Klasse') or
+         Overlap(gPropList, Keep, 'Eigenschaften/Merken') or
+         Overlap(gClassBox, gPatchBox, 'Klasse/Patchfeld') or
+         Overlap(Keep, Show, 'Merken/Zeigen') or
+         Overlap(Del, Undo, 'Entfernen/Zuruecknehmen');
   Check(Format('%d px breit: keine weitere Ueberdeckung', [AWidth]), not Bad);
 end;
 
@@ -198,15 +227,15 @@ var
   Ok: Boolean;
 begin
   Section('Umbruch bei verschiedenen Groessen');
-  { Ab der Mindestgroesse (700) aufwaerts darf sich nichts ueberdecken. }
-  CheckNoOverlap(700);
-  CheckNoOverlap(980);
+  { Ab der Mindestgroesse aufwaerts darf sich nichts ueberdecken. }
+  CheckNoOverlap(MIN_W);
+  CheckNoOverlap(1040);
   CheckNoOverlap(1400);
 
   { Auch unter der Mindestgroesse darf nichts negativ werden - MoveWindow
     mit negativer Breite ist genau die Sorte Fehler, die man erst sieht,
     wenn jemand das Fenster klein zieht. }
-  SetWindowPos(gFinder, 0, -3200, -3200, 700, 420,
+  SetWindowPos(gFinder, 0, -3200, -3200, MIN_W, MIN_H,
                SWP_NOZORDER or SWP_NOACTIVATE);
   Pump(50);
   SetWindowPos(gFinder, 0, -3200, -3200, 1400, 900,
@@ -222,7 +251,7 @@ begin
   Ok := GetWindowRect(gElemList, R);
   Check('Trefferliste hat noch Hoehe', Ok and (R.Bottom - R.Top > 0),
         IntToStr(R.Bottom - R.Top));
-  SetWindowPos(gFinder, 0, -3200, -3200, 980, 640,
+  SetWindowPos(gFinder, 0, -3200, -3200, 1040, 680,
                SWP_NOZORDER or SWP_NOACTIVATE);
   Pump(50);
 end;
@@ -292,6 +321,61 @@ begin
         GetText(gStatusBar));
 end;
 
+{ Bauen ohne Host. Es gibt nichts zu klonen und nichts anzulegen - jeder
+  dieser Wege muss trotzdem durchlaufen und SAGEN, was fehlt. Ein Knopf, der
+  still nichts tut, ist der Fehler, den man erst im Kundentermin sieht. }
+procedure TestBuilding;
+begin
+  Section('Bauen ohne Host (nichts darf abstuerzen)');
+
+  SetText(gClassBox, '');
+  SetText(gTextBox, '');
+
+  Push(IDC_KEEP);
+  Pump(30);
+  Check('Merken ohne Auswahl weist darauf hin',
+        Pos('Treffer', GetText(gStatusBar)) > 0, GetText(gStatusBar));
+
+  Push(IDC_CLONE);
+  Pump(30);
+  Check('Klonen ohne Auswahl weist darauf hin',
+        Pos('Treffer', GetText(gStatusBar)) > 0, GetText(gStatusBar));
+
+  { Ohne Klasse muss "Neu" sagen, was einzutragen ist - und zwar BEVOR es
+    ueber das fehlende Ziel klagt. }
+  Push(IDC_NEW);
+  Pump(30);
+  Check('Neu ohne Klasse nennt Beispiele',
+        Pos('TButton', GetText(gStatusBar)) > 0, GetText(gStatusBar));
+
+  SetText(gClassBox, 'TButton');
+  Push(IDC_NEW);
+  Pump(30);
+  Check('Neu ohne Ziel weist auf den Treffer hin',
+        Pos('Treffer', GetText(gStatusBar)) > 0, GetText(gStatusBar));
+
+  Push(IDC_DELETE);
+  Pump(30);
+  Check('Entfernen ohne Auswahl weist darauf hin',
+        Pos('Treffer', GetText(gStatusBar)) > 0, GetText(gStatusBar));
+
+  { Der Haken darf gesetzt und wieder geloescht werden, ohne dass etwas
+    passiert. }
+  SendMessageW(gEventsBox, BM_SETCHECK, BST_CHECKED, 0);
+  Push(IDC_CLONE);
+  Pump(30);
+  SendMessageW(gEventsBox, BM_SETCHECK, BST_UNCHECKED, 0);
+  Check('Haken "mit Ereignissen" ist harmlos', True);
+
+  { Und die API dahinter, unmittelbar: ohne AMS gibt es keinen
+    Konstruktor - dann wird NICHTS angelegt, mit Begruendung. }
+  Check('ohne Host ist die Factory nicht bereit', not AmsFactoryReady);
+  Check('mit Begruendung', AmsLastError <> '', AmsLastError);
+  Check('ohne Host kein Konstruktorslot', AmsCtorSlot < 0,
+        IntToStr(AmsCtorSlot));
+  Check('nichts angelegt', AmsSpawnCount = 0, IntToStr(AmsSpawnCount));
+end;
+
 procedure TestHighlight;
 var
   R: TRect;
@@ -328,6 +412,7 @@ begin
   TestOpenClose;
   TestLayout;
   TestActions;
+  TestBuilding;
   TestHighlight;
 
   Section('Abbau');

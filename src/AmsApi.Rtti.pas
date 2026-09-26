@@ -33,6 +33,45 @@ function AmsClassName(AObj: Pointer): string;
 { True, wenn der Klassenname ATeil enthaelt (case-sensitiv wie im Original). }
 function AmsClassIs(AObj: Pointer; const APart: string): Boolean;
 
+{ ------------------------------------------------------------ Klassenkette -
+  Dieselben Angaben, aber ueber den KLASSENZEIGER statt ueber eine Instanz.
+  Damit laesst sich ein Element einordnen, ohne seine Eigenschaften zu raten:
+  "ist das ein TWinControl" ist eine Frage an die Klasse, nicht an das Objekt. }
+
+{ Klasse eines Objekts (der VMT-Zeiger an Offset 0). }
+function AmsClassOf(AObj: Pointer): Pointer;
+
+{ Name einer KLASSE (nicht eines Objekts). }
+function AmsClassNameOf(ACls: Pointer): string;
+
+{ Elternklasse. vmtParent zeigt auf einen Zeiger auf die Klasse - hier ist
+  beides dereferenziert. nil bei TObject und bei kaputten Zeigern. }
+function AmsClassParent(ACls: Pointer): Pointer;
+
+{ Groesse einer Instanz dieser Klasse in Byte. 0, wenn nicht lesbar. }
+function AmsInstanceSize(ACls: Pointer): Integer;
+
+{ Steht AName in der Klassenkette? Verglichen wird der Klassenname ohne
+  Gross-/Kleinschreibung, also 'TWinControl', 'TControl', 'TdxBarItem'.
+  Das ist die ehrliche Auskunft ueber die Herkunft eines fremden Elements -
+  anders als die Frage, ob es zufaellig eine Eigenschaft "Left" hat. }
+function AmsClassInheritsFrom(ACls: Pointer; const AName: string): Boolean;
+function AmsInheritsFrom(AObj: Pointer; const AName: string): Boolean;
+
+{ In welchem VMT-Slot steht diese Methode? Liefert den BYTEOFFSET (0, 4, 8
+  ...) oder -1.
+
+  Wozu: virtuelle Methoden des Hosts - der Konstruktor, TControl.SetParent -
+  muessen ueber das VMT DES OBJEKTS gerufen werden, sonst greift bei einer
+  abgeleiteten Klasse die falsche Fassung. Der Slot unterscheidet sich je
+  Delphi-Version. Statt ihn zu verdrahten, wird die aus dem Package geholte
+  Adresse der BASISFASSUNG im VMT der BASISKLASSE gesucht - der gefundene
+  Slot gilt dann fuer jede abgeleitete Klasse.
+  Gesucht wird nur, solange die Slots wie Codezeiger aussehen; hinter dem
+  letzten Eintrag stehen andere Daten. }
+function AmsVmtIndexOf(ACls, AMethod: Pointer;
+  AMaxSlots: Integer = 200): Integer;
+
 { TComponent.FName direkt aus Offset 8 lesen - fuer den haeufigsten Fall ohne
   jede Allokation im Delphi-Heap. Liefert '' bei unplausiblem Inhalt. }
 function AmsName(AComp: Pointer): string;
@@ -84,6 +123,107 @@ end;
 function AmsClassIs(AObj: Pointer; const APart: string): Boolean;
 begin
   Result := (APart <> '') and (Pos(APart, AmsClassName(AObj)) > 0);
+end;
+
+{ ------------------------------------------------------------ Klassenkette - }
+
+function AmsClassOf(AObj: Pointer): Pointer;
+begin
+  Result := nil;
+  if AObj = nil then Exit;
+  try
+    Result := PPointer(AObj)^;
+  except
+    Result := nil;
+  end;
+end;
+
+function AmsClassNameOf(ACls: Pointer): string;
+var
+  P: PByte;
+begin
+  Result := '';
+  if ACls = nil then Exit;
+  try
+    P := PPointer(PByte(ACls) + vmtClassName)^;
+    if P <> nil then SetString(Result, PAnsiChar(P + 1), P^);
+  except
+    Result := '';
+  end;
+end;
+
+function AmsClassParent(ACls: Pointer): Pointer;
+var
+  PP: PPointer;
+begin
+  Result := nil;
+  if ACls = nil then Exit;
+  try
+    { Erst der Zeiger AUF den Klassenzeiger, dann die Klasse selbst. }
+    PP := PPointer(PByte(ACls) + vmtParent)^;
+    if PP <> nil then Result := PP^;
+  except
+    Result := nil;
+  end;
+end;
+
+function AmsInstanceSize(ACls: Pointer): Integer;
+begin
+  Result := 0;
+  if ACls = nil then Exit;
+  try
+    Result := PInteger(PByte(ACls) + vmtInstanceSize)^;
+    if (Result < 0) or (Result > 1024 * 1024) then Result := 0;
+  except
+    Result := 0;
+  end;
+end;
+
+function AmsClassInheritsFrom(ACls: Pointer; const AName: string): Boolean;
+var
+  C: Pointer;
+  Guard: Integer;
+begin
+  Result := False;
+  if (ACls = nil) or (AName = '') then Exit;
+  C := ACls;
+  Guard := 0;
+  { 64 Stufen sind mehr als jede VCL-Kette; die Schranke faengt einen
+    verbogenen vmtParent ab, der sonst ewig im Kreis liefe. }
+  while (C <> nil) and (Guard < 64) do
+  begin
+    if SameText(AmsClassNameOf(C), AName) then Exit(True);
+    C := AmsClassParent(C);
+    Inc(Guard);
+  end;
+end;
+
+function AmsInheritsFrom(AObj: Pointer; const AName: string): Boolean;
+begin
+  Result := AmsClassInheritsFrom(AmsClassOf(AObj), AName);
+end;
+
+function AmsVmtIndexOf(ACls, AMethod: Pointer; AMaxSlots: Integer): Integer;
+var
+  i: Integer;
+  Slot: Pointer;
+begin
+  Result := -1;
+  if (ACls = nil) or (AMethod = nil) then Exit;
+  if AMaxSlots <= 0 then AMaxSlots := 200;
+  try
+    for i := 0 to AMaxSlots - 1 do
+    begin
+      Slot := PPointer(PByte(ACls) + i * SizeOf(Pointer))^;
+      { Hinter dem letzten virtuellen Eintrag stehen andere Daten - eine
+        Laenge, ein Zeichen, eine 0. Was kein Codezeiger sein kann, beendet
+        die Suche, statt sie in fremden Speicher laufen zu lassen. }
+      if PtrUInt(Slot) < $10000 then Break;
+      if Slot = AMethod then Exit(i * SizeOf(Pointer));
+    end;
+  except
+    Result := -1;
+  end;
 end;
 
 function AmsName(AComp: Pointer): string;

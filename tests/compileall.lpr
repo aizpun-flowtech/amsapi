@@ -8,7 +8,8 @@ uses
   AmsApi.Hook, AmsApi.Trace, AmsApi.Recorder, AmsApi.TraceWindow,
   AmsApi.Rtti, AmsApi.Props, AmsApi.Components, AmsApi.Ui,
   AmsApi.Glyphs, AmsApi.Menus,
-  AmsApi.Ribbon, AmsApi.Actions, AmsApi.Workflow, AmsApi.Automatismus,
+  AmsApi.Ribbon, AmsApi.Factory, AmsApi.Actions, AmsApi.Workflow,
+  AmsApi.Automatismus,
   AmsApi.Http, AmsApi.Plugin;
 begin
   WriteLn('AmsApi ', AMS_API_VERSION, ' - alle Units uebersetzt.');

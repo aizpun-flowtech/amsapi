@@ -74,6 +74,14 @@ function AmsPropKindOf(AObj: Pointer; const APath: string): TAmsPropKind;
 function AmsPropTypeName(AObj: Pointer; const APath: string): string;
 function AmsPropWritable(AObj: Pointer; const APath: string): Boolean;
 
+{ Wird beim Schreiben unmittelbar ein Feld gefuellt, statt eine Methode zu
+  rufen? Wichtig beim KOPIEREN von Objekteigenschaften: eine Setzmethode
+  macht dort in aller Regel Assign und legt eine echte Kopie an, ein Feld
+  wuerde nur den Zeiger uebernehmen. Wer eine solche Eigenschaft trotzdem
+  kopiert, hat zwei Elemente mit derselben Schrift - und einen Absturz,
+  sobald das erste sie freigibt. }
+function AmsPropWritesField(AObj: Pointer; const APath: string): Boolean;
+
 { Erlaubte Werte einer Aufzaehlung oder Menge, mit "|" getrennt. Leer bei
   allen anderen Typen. Genau das gehoert in eine Fehlermeldung. }
 function AmsPropOptions(AObj: Pointer; const APath: string): string;
@@ -434,6 +442,23 @@ var
 begin
   Result := Resolve(AObj, APath, Owner, Leaf, Info, Kind) and
             PropIsWritable(Info);
+end;
+
+function AmsPropWritesField(AObj: Pointer; const APath: string): Boolean;
+var
+  Owner, Info, Setter: Pointer;
+  Leaf: string;
+  Kind: TAmsPropKind;
+begin
+  Result := False;
+  if not Resolve(AObj, APath, Owner, Leaf, Info, Kind) then Exit;
+  try
+    Setter := PPointer(PtrUInt(Info) + ofsPropSetProc)^;
+    Result := (Setter <> nil) and
+              ((PtrUInt(Setter) and PropSlotMask) = PropSlotField);
+  except
+    Result := False;
+  end;
 end;
 
 function AmsPropOptions(AObj: Pointer; const APath: string): string;

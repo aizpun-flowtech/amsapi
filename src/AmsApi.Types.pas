@@ -49,6 +49,12 @@ const
   vmtTypeInfo  = -72;
   vmtIntfTable = -84;
 
+  { vmtParent zeigt auf einen ZEIGER auf die Elternklasse (PPClass), nicht
+    auf die Klasse selbst - einmal zu wenig dereferenziert liefert Muell.
+    Nachgemessen an rtl230.bpl: TComponent-48 -> ... -> "TPersistent". }
+  vmtParent       = -48;
+  vmtInstanceSize = -52;
+
   { TComponent-Felder: FOwner und FName liegen unmittelbar hinter dem VMT-Zeiger }
   ofsComponentOwner = 4;
   ofsComponentName  = 8;
@@ -115,6 +121,17 @@ const
   ofsPropGetProc = 4;
   ofsPropSetProc = 8;
   ofsPropName    = 26;
+
+  { GetProc/SetProc sagen in den obersten 8 Bit, WIE zugegriffen wird:
+    $FF...... = unmittelbar ein Feld (untere 24 Bit = Offset im Objekt),
+    $FE...... = virtuelle Methode, alles andere = Adresse einer Methode.
+    Der Unterschied entscheidet beim Kopieren einer Objekteigenschaft:
+    eine Methode macht dort Assign (echte Kopie), ein Feld wuerde nur den
+    Zeiger uebernehmen - und zwei Elemente teilten sich eine Schrift, die
+    beim ersten Freigeben unter dem zweiten wegstirbt. }
+  PropSlotMask    = $FF000000;
+  PropSlotField   = $FF000000;
+  PropSlotVirtual = $FE000000;
 
 type
   { -------------------------------------------------------------- IPlugin
@@ -184,8 +201,28 @@ type
   { Ergebnis ist ein TMethod (8 Byte) -> ueber verstecktes @Result in ECX. }
   TFnGetMethodProp   = procedure(AObj, APropName, AResult: Pointer); register;
 
+  { rtl - Objekte anlegen und freigeben.
+
+    Der virtuelle Konstruktor, wie ihn Delphi selbst ruft; nachgelesen in der
+    Disassembly von rtl230.bpl:
+        EAX = Klassenzeiger   DL = 1 (Speicher anfordern)   ECX = AOwner
+    DL steckt im ZWEITEN Register, deshalb rutscht der erste echte Parameter
+    auf ECX - mit AOwner in EDX wuerde der Konstruktor den Flagwert als
+    Besitzer nehmen. Ergebnis ist die neue Instanz.
+    Aufzurufen ist der Slot aus dem VMT der ZIELKLASSE, nicht diese Adresse:
+    jede abgeleitete Klasse hat ihren eigenen Konstruktor. }
+  TFnComponentCreate = function (AClass: Pointer; AFlag: Byte;
+                                 AOwner: Pointer): Pointer; register;
+  { TObject.Free - ruft den virtuellen Destruktor mit gesetztem Flag, gibt
+    also auch den Speicher frei. Der Speicher gehoert dem Delphi-Heap; mit
+    FreeMem aus FPC waere er nicht wieder loszuwerden. }
+  TFnObjectFree      = procedure(Self: Pointer); register;
+
   { vcl }
   TFnFindControl     = function (AHandle: HWND): Pointer; register;
+  { TControl.SetParent, ebenfalls VIRTUELL ueber den VMT-Slot zu rufen:
+    TWinControl haengt daran das Erzeugen des Fensters. }
+  TFnSetParent       = procedure(Self, AParent: Pointer); register;
   TFnSetAlphaFormat  = procedure(Self: Pointer; AValue: Byte); register;
   TFnLoadFromFile    = procedure(Self, AFileName: Pointer); register;
 
@@ -195,6 +232,9 @@ type
   TFnBarLinksAdd     = function (Self, AItem: Pointer): Pointer; register;
   TFnLinkGetItem     = function (Self: Pointer): Pointer; register;
   TFnItemDirectClick = procedure(Self: Pointer); register;
+  { TdxBar.BarManager - der Manager, an dem ein neues Ribbon-Element
+    angemeldet werden muss. }
+  TFnGetBarManager   = function (Self: Pointer): Pointer; register;
 
   { afnComponentsRt - globale Action-/Event-Registry }
   TFnGetInstance     = function (AClass: Pointer): Pointer; register;

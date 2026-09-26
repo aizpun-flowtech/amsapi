@@ -158,6 +158,19 @@ function AmsElementAlive(const AElement: TAmsElement): Boolean;
 
 function AmsElementVisible(AObj: Pointer): Boolean;
 
+{ Auf welchem Bedienelement sitzt dieses hier? Der Weg fuehrt ueber das
+  Fenster: GetParent des eigenen Fensters, zurueck ins VCL-Objekt. Fuer
+  gezeichnete Bedienelemente (TLabel, TSpeedButton) und dxBar-Elemente gibt
+  es kein eigenes Fenster - dort ist die Antwort nil, mit Klartext in
+  AmsLastError. Dann muss der Zielcontainer benannt werden.
+  TControl.Parent selbst ist NICHT published und ueber die RTTI nicht zu
+  erreichen; deshalb dieser Umweg. }
+function AmsParentOf(AObj: Pointer): Pointer;
+
+{ Kann dieses Element andere aufnehmen? True bei TWinControl (Formular,
+  Panel, Registerkarte) und bei einer dxBar-Leiste. }
+function AmsIsContainer(AObj: Pointer): Boolean;
+
 { ------------------------------------------------------------- Bearbeiten - }
 
 { Der allgemeine Weg: jede published property ueber ihren Pfad, aus Text.
@@ -778,6 +791,43 @@ begin
             [AmsName(AObj), AmsClassName(AObj), R.Left, R.Top, R.Right,
              R.Bottom]);
   Result := True;
+end;
+
+function AmsParentOf(AObj: Pointer): Pointer;
+var
+  W, P: HWND;
+  Guard: Integer;
+begin
+  Result := nil;
+  if AObj = nil then Exit;
+  W := AmsWindowOfElement(AObj);
+  if W = 0 then
+  begin
+    AmsFailFmt('[%s] hat kein eigenes Fenster - der Container laesst sich ' +
+               'so nicht bestimmen, er muss benannt werden',
+               [AmsClassName(AObj)]);
+    Exit;
+  end;
+  { Nicht jedes Elternfenster gehoert einem VCL-Objekt (Zwischenfenster von
+    DevExpress); dann eine Stufe hoeher. }
+  P := GetParent(W);
+  Guard := 0;
+  while (P <> 0) and (Guard < 8) do
+  begin
+    Result := AmsControlOf(P);
+    if Result <> nil then Exit;
+    P := GetParent(P);
+    Inc(Guard);
+  end;
+  if Result = nil then
+    AmsFail('Zum Elternfenster gibt es kein VCL-Element');
+end;
+
+function AmsIsContainer(AObj: Pointer): Boolean;
+begin
+  Result := (AObj <> nil) and
+            (AmsInheritsFrom(AObj, 'TWinControl') or
+             AmsInheritsFrom(AObj, 'TdxBar'));
 end;
 
 function AmsElementOfWindow(AHandle: HWND): TAmsElement;

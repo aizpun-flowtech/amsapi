@@ -1,9 +1,9 @@
 library UiTweaks;
 
 { ============================================================================
-  UiTweaks - vorhandene AMS-Elemente finden und bearbeiten
+  UiTweaks - vorhandene AMS-Elemente finden, bearbeiten und ergaenzen
 
-  Drei Wege, dieselbe Sache:
+  Vier Wege, dieselbe Sache:
 
   1. SUCHEN IM LAUFENDEN AMS. Die Schaltflaeche "Elemente suchen" oeffnet ein
      Fenster: Suchbegriff eingeben (Name, Beschriftung oder Klasse, "*" und
@@ -13,14 +13,24 @@ library UiTweaks;
      Ein Fensterhandle aus AutoIt Window Info ("0x00650E98") kann man direkt
      ins Suchfeld schreiben.
 
-  2. AUS DER INI. Was unter [Patch] steht, wird beim Start angewandt - ohne
+  2. BAUEN, im selben Fenster eine Zeile darueber. "Merken" nimmt den
+     gewaehlten Treffer als Vorlage, "Klonen" setzt eine Kopie davon in den
+     Container, der gerade gewaehlt ist - ohne Vorlage entsteht eine Kopie
+     neben dem Original. "Neu" legt ein Element der eingetragenen Klasse an
+     (TButton, TPanel, TEdit, TdxBarLargeButton), "Entfernen" nimmt zurueck,
+     was dieses Plugin angelegt hat. Der Haken "mit Ereignissen" entscheidet,
+     ob der Klon auch TUT, was das Original tut.
+
+  3. AUS DER INI. Was unter [Patch] steht, wird beim Start angewandt - ohne
      eine Zeile Pascal. Genau die Zeilen, die das Suchfenster liefert.
 
-  3. UEBERNEHMEN. Steht unter [Hook] ein Element, wird dessen OnClick
+  4. UEBERNEHMEN. Steht unter [Hook] ein Element, wird dessen OnClick
      mitgehoert.
 
   Alle Aenderungen werden mitgeschrieben und beim Entladen des Plugins
-  zurueckgenommen.
+  zurueckgenommen; alles Angelegte und Geklonte wird dann wieder abgeraeumt.
+  Die Arbeit macht die Bibliothek (AmsApi.Ui, AmsApi.Factory) - hier steht
+  nur die Bedienung.
   ============================================================================ }
 
 {$MODE DELPHI}
@@ -28,7 +38,8 @@ library UiTweaks;
 
 uses
   Windows, SysUtils, Classes,
-  AmsApi.Plugin, AmsApi.Ui, AmsApi.Props, AmsApi.Ini, AmsApi.Log;
+  AmsApi.Plugin, AmsApi.Ui, AmsApi.Factory, AmsApi.Props, AmsApi.Ini,
+  AmsApi.Log;
 
 const
   TAG_FINDER = 1;

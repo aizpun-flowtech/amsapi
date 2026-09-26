@@ -136,6 +136,28 @@ vergrößern, einfärben, verstecken. `AmsApi.Props` liefert die Typinformation,
 | Nur `TNotifyEvent` | N | Der Typ wird über die RTTI geprüft. Ein Ereignis mit mehr Parametern würde unser Thunk nicht vom Stack räumen — das wäre kein Absturz „vielleicht“, sondern einer mit Ansage |
 | Original wird gemerkt | N | `AmsUnhookAll` trägt es beim Entladen zurück. Ohne das springt der nächste Klick in freigegebenen Speicher |
 
+### Elemente anlegen, klonen und einhängen
+
+`AmsApi.Factory`. Bis hierher konnte die Bibliothek ändern, was da ist. Hier
+kommt Neues dazu — und zwar aus derselben Klasse wie das Vorhandene.
+
+| Feature | Stufe | Detail |
+|---|---|---|
+| **Virtueller Konstruktor des Hosts** | T · N | Delphi-Konstruktoren sind virtuell; `TButton.Create` macht mehr als `TComponent.Create`. Aufgerufen wird deshalb der Slot aus dem VMT der **Zielklasse**, mit `EAX` = Klasse, `DL` = 1, `ECX` = Besitzer. `tests\rttiprobe.lpr` legt damit gegen die echte `rtl230.bpl` ein `TComponent` mit Besitzer an, benennt es und gibt es wieder frei |
+| Slot wird gesucht, nicht verdrahtet | T | Die Adresse von `TComponent.Create` kommt aus dem Package (`…@$bctr$…`), ihr Platz im VMT von `TComponent` ist der Slot (`AmsVmtIndexOf`). Bei Delphi 10 Seattle ist das Offset 60, bei `TControl.SetParent` 140 — beides **gemessen**, nicht angenommen. Wird der Slot nicht gefunden, legt die Unit **nichts** an: ein falscher Slot wäre ein Sprung in eine beliebige andere Methode |
+| Klasse auch ohne Registrierung | N | `AmsResolveClass`: erst `Classes.GetClass`, dann ein Element derselben Klasse in der laufenden Oberfläche — dessen Klassenzeiger tut es genauso. Was auf dem Bildschirm steht, lässt sich also immer nachbauen |
+| Nur unterhalb von `TComponent` | T | Wird über die Klassenkette geprüft (`vmtParent`), bevor der Slot benutzt wird |
+| Bedienelement einhängen | N | `TControl.SetParent`, ebenfalls **virtuell** — daran hängt bei `TWinControl` das Erzeugen des Fensters. Die Basisfassung würde ein Bedienelement ohne Fenster hinterlassen |
+| Ribbon-Element einhängen | N | dxBar-Elemente haben keinen Parent: `TdxBarManager.AddItem`, dann `TdxBar.ItemLinks.Add`. Der Manager kommt aus der Leiste (`TdxBar.BarManager`), sonst aus der Besitzerkette, zuletzt `dxBarManager1` |
+| **Klonen** | N | `AmsCloneElement` — alle schreibbaren published properties über die RTTI. Ohne Ziel landet die Kopie beim Original, um 16 Punkte versetzt (sonst läge sie unsichtbar darauf) |
+| Objekteigenschaften nur über Setzmethode | N | `Font`, `Glyph`, `Images` werden **nur** kopiert, wenn dahinter eine Methode steht — die macht `Assign`, also eine echte Kopie. Steht dort unmittelbar ein Feld (`SetProc` mit `$FF……`), wird ausgelassen: zwei Elemente mit derselben Schrift sind ein Absturz auf Raten. `nil` wird nie geschrieben — `Font := nil` ist kein Löschen |
+| Ereignisse auf Wunsch mitkopieren | N | `ACopyEvents` überträgt das `TMethod` unverändert: der Klon ruft dieselbe Behandlung des Hosts, mit sich selbst als `Sender` |
+| Kein Journal beim Klonen | N | `AmsRecordChanges` ist währenddessen aus. Ein neues Element hat keinen Zustand, der sich zurücknehmen ließe — und das Journal (512 Plätze) wäre nach einem Klon voll |
+| Umhängen mit Rückweg | N | `AmsMoveElement` für ein Element **des Hosts**: alter Container und alte Lage werden mitgeschrieben und beim Entladen wiederhergestellt. Ribbon-Elemente sind ausgenommen — die hängen an Verknüpfungen des Hosts |
+| **Nur Eigenes wird entfernt** | T | `AmsRemoveElement` prüft das Verzeichnis. Ein Element des Hosts wird von hier aus nie zerstört; die Prüfung ist im Unit-Test festgenagelt |
+| Abräumen beim Entladen | N | `AmsFactoryRelease` — erst Klickbehandlung abklemmen, dann `TObject.Free` (Delphi-Heap!). Zeigt der Zeiger nicht mehr auf dasselbe Element, wird nichts angefasst. `TAmsPlugin.Unload` ruft es **vor** `AmsUiRelease`, die `finalization` der Unit ebenfalls |
+| Fällt das Freigeben aus, wird versteckt | N | Der Destruktor läuft in `try/except`; scheitert er, bleibt das Element unsichtbar zurück statt als toter Knopf |
+
 ### Suchen im laufenden AMS
 
 | Feature | Stufe | Detail |
@@ -145,6 +167,9 @@ vergrößern, einfärben, verstecken. `AmsApi.Props` liefert die Typinformation,
 | Patchzeile mit aktuellem Wert | N | Der bestehende Wert ist die beste Vorlage — er hat garantiert das richtige Format, ob Zahl, Aufzählung oder Menge |
 | „Zeigen" | N | Blinkt das gewählte Element im AMS-Fenster an und schreibt gleichzeitig alle Einzelheiten ins Log — die Antwort auf „ist das überhaupt das richtige". Doppelklick auf den Treffer tut dasselbe. Das Suchfenster geht dafür kurz nach hinten |
 | Sofort ausprobieren | N | „Anwenden" führt die Zeile aus und liest die Werte neu ein, „Zurücknehmen" macht alles rückgängig, „Kopieren" legt sie in die Zwischenablage |
+| **Bauen im selben Fenster** | T · N | Eine Zeile darüber: „Merken" nimmt den Treffer als Vorlage, „Klonen" setzt eine Kopie in den gerade gewählten Container (ohne Vorlage: neben das Original), „Neu" legt ein Element der eingetragenen Klasse an, „Entfernen" nimmt Eigenes zurück. Der Haken „mit Ereignissen" entscheidet, ob der Klon auch tut, was das Original tut |
+| Ziel ist die Auswahl | N | Ist der gewählte Treffer kein Container, ist er als „dorthin, wo der sitzt" gemeint — dann wird sein Container genommen (`AmsParentOf` über `GetParent` des Fensters). Geht das nicht (gezeichnete Elemente, Ribbon), sagt die Statuszeile, was auszuwählen ist |
+| Ergebnis steht sofort in der Liste | N | Das neue Element wird hinten angehängt und ausgewählt — man steht danach auf seinen Eigenschaften und kann es über die Patchzeile weiterstellen |
 | Reines Win32 | T | Kein VCL-Kontakt: `CreateWindowExW` mit `EDIT`/`BUTTON`/`LISTBOX`/`STATIC`, modeless in der Nachrichtenschleife des Hosts. Ein modaler Dialog würde AMS anhalten |
 | Fenster verschwindet beim Entladen | T | `BeforeUnload` ruft `FinderClose` (`DestroyWindow` + `UnregisterClass`). Die Fensterprozedur liegt im Plugin-Modul — ein stehengebliebenes Fenster wäre nach dem Entladen tödlich |
 
@@ -340,7 +365,7 @@ Prototyp bzw. das `ScriptScheduler`-Plugin des Herstellers gescheitert.
 | `tools\exports.py` | T | Exportnamen aus BPL/DLL. Eigener PE-Parser, weil `pefile` bei großen Tabellen abschneidet (`afnBu.bpl`: ~34800 Symbole) |
 | `tools\mkicon.py` | T | Platzhalter-PNG erzeugen, nur Standardbibliothek |
 | `docs\HOST-ABI.md` | — | Der komplette Host-Vertrag: Ladevorgang, `IPlugin`, Konventionen, Symboltabelle, 12 Fallstricke |
-| Fünf Beispiel-Plugins | T | `HelloButton` (Minimalfall) · `WebHook` (Hintergrundthread → UI-Thread) · `RunAutomatismus` (Kontext-Automatismus mit brauchbarer Fehlermeldung) · `UiTweaks` (**Suchfenster im laufenden AMS**, Patches aus der INI, `OnClick` übernehmen) · `Recorder` (**Verlaufsfenster im laufenden AMS**: zusehen, was der Host tut — Klicks, Actions, SQL mit Dauer und Verschachtelung; Aufzeichnen ist ein Schalter darin) |
+| Fünf Beispiel-Plugins | T | `HelloButton` (Minimalfall) · `WebHook` (Hintergrundthread → UI-Thread) · `RunAutomatismus` (Kontext-Automatismus mit brauchbarer Fehlermeldung) · `UiTweaks` (**Suchfenster im laufenden AMS**: suchen, patchen und **bauen** — merken, klonen, neu anlegen, wieder entfernen; dazu Patches aus der INI und `OnClick` übernehmen) · `Recorder` (**Verlaufsfenster im laufenden AMS**: zusehen, was der Host tut — Klicks, Actions, SQL mit Dauer und Verschachtelung; Aufzeichnen ist ein Schalter darin) |
 
 ---
 

@@ -54,7 +54,7 @@ interface
 
 uses
   Windows, SysUtils, Classes, AmsApi.Types, AmsApi.Ribbon, AmsApi.Menus,
-  AmsApi.Props, AmsApi.Ui;
+  AmsApi.Props, AmsApi.Ui, AmsApi.Factory;
 
 type
   TAmsPlugin = class;
@@ -194,6 +194,27 @@ type
         bbLoeschen.Enabled=0
         Speichern.Caption=Sichern }
     function ApplyPatchesFromIni(const ASection: string = 'Patch'): Integer;
+
+    { ------------------------------------------- Neue Elemente ---------
+      Alles Weitere steht in AmsApi.Factory. Angelegtes und Geklontes wird
+      beim Entladen wieder abgeraeumt, genau wie eine Aenderung. }
+
+    { Neues Element in einen Container: NewElement('TButton', 'Test',
+      'pnUnten'). Liefert das Element oder nil (Grund in LastError). }
+    function NewElement(const AClass, ACaption,
+      ATargetNameOrCaption: string): Pointer;
+
+    { Vorhandenes Element kopieren und woanders einhaengen:
+      CloneElement('bbSpeichern', 'bmbBenutzerdefiniert').
+      Zielname leer = dorthin, wo das Original sitzt.
+      ACopyEvents = True laesst den Klon dieselbe Behandlung des Hosts
+      rufen wie das Original. }
+    function CloneElement(const ASourceNameOrCaption,
+      ATargetNameOrCaption: string; ACopyEvents: Boolean = False): Pointer;
+
+    { Ein selbst angelegtes Element wieder entfernen. Auf ein Element des
+      Hosts angewandt liefert es False. }
+    function RemoveElement(AObj: Pointer): Boolean;
 
     { Alle eigenen Aenderungen sofort zuruecknehmen. }
     function UndoUiChanges: Integer;
@@ -558,6 +579,10 @@ begin
       eine deaktivierte Schaltflaeche stehen, waere AMS dauerhaft
       beschaedigt; bliebe ein Ereignis stehen, waere der naechste Klick
       ein Sprung in freigegebenen Speicher. }
+    { Selbst angelegte und geklonte Elemente zuerst: sie haengen an
+      Elementen des Hosts, und ihre Klickbehandlung zeigt in dieses Modul. }
+    AmsFactoryRelease;
+
     AmsUiRelease;
 
     { OnClick abklemmen, BEVOR das Modul verschwindet. }
@@ -746,6 +771,48 @@ begin
   finally
     L.Free;
   end;
+end;
+
+function TAmsPlugin.NewElement(const AClass, ACaption,
+  ATargetNameOrCaption: string): Pointer;
+var
+  Opt: TAmsNewOptions;
+  Target: TAmsElement;
+begin
+  Result := nil;
+  Opt := AmsNewDefaults;
+  Opt.ClassName := AClass;
+  Opt.Caption := ACaption;
+  if ATargetNameOrCaption <> '' then
+  begin
+    if not AmsElement(ATargetNameOrCaption, Target) then Exit;
+    Opt.Target := Target.Obj;
+  end;
+  if not AmsNewElement(Opt, Result) then Result := nil;
+end;
+
+function TAmsPlugin.CloneElement(const ASourceNameOrCaption,
+  ATargetNameOrCaption: string; ACopyEvents: Boolean): Pointer;
+var
+  Src, Target: TAmsElement;
+  Dest: Pointer;
+begin
+  Result := nil;
+  if not AmsElement(ASourceNameOrCaption, Src) then Exit;
+  Dest := nil;
+  if ATargetNameOrCaption <> '' then
+  begin
+    if not AmsElement(ATargetNameOrCaption, Target) then Exit;
+    Dest := Target.Obj;
+  end;
+  if AmsCloneElementEx(Src.Obj, Dest, '', ACopyEvents, AmsKeep, AmsKeep,
+                       Result) then Exit;
+  Result := nil;
+end;
+
+function TAmsPlugin.RemoveElement(AObj: Pointer): Boolean;
+begin
+  Result := AmsRemoveElement(AObj);
 end;
 
 function TAmsPlugin.UndoUiChanges: Integer;

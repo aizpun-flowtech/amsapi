@@ -9,10 +9,16 @@ program rttiprobe;
   dieses Programm da.
 
   Es braucht AMS NICHT laufend, nur installiert: rtl<NNN>.bpl und vcl<NNN>.bpl
-  werden geladen und ausschliesslich GELESEN. Es wird kein Objekt erzeugt und
-  keine Eigenschaft geschrieben - als "Instanz" dient ein Zeiger auf den
-  Klassenzeiger, denn die RTTI haengt an der Klasse, nicht am Objekt. Alles,
-  was hier geprueft wird, kommt ohne Instanz aus.
+  werden geladen. Fuer die RTTI-Proben wird ausschliesslich GELESEN - als
+  "Instanz" dient ein Zeiger auf den Klassenzeiger, denn die RTTI haengt an
+  der Klasse, nicht am Objekt.
+
+  EINE Ausnahme, und sie ist der Sinn der Sache: der virtuelle Konstruktor
+  aus AmsApi.Factory wird wirklich aufgerufen. Ob EAX/DL/ECX richtig belegt
+  sind, ob der gesuchte VMT-Slot der richtige ist und ob TObject.Free den
+  Speicher wieder los wird, sieht man an nichts anderem als an einem
+  angelegten und wieder freigegebenen TComponent. Das laeuft hier gegen die
+  ECHTE Delphi-RTL, nur eben ohne AMS darum herum.
 
   Ohne AMS-Installation endet der Lauf mit "uebersprungen" und Rueckgabe 0.
 
@@ -24,7 +30,8 @@ program rttiprobe;
 
 uses
   Windows, SysUtils, Classes,
-  AmsApi.Types, AmsApi.Bind, AmsApi.Props, AmsApi.Log;
+  AmsApi.Types, AmsApi.Bind, AmsApi.Props, AmsApi.Rtti, AmsApi.Components,
+  AmsApi.Factory, AmsApi.Log;
 
 const
   AMS_BIN = 'C:\Program Files (x86)\assfinet ams.5\BIN';
@@ -154,15 +161,114 @@ begin
   Check('Name und Tag stehen in der Liste', Found = 2, IntToStr(Found));
 end;
 
+{ vcl nachladen - fuer TControl.SetParent und fuer TFont. }
+function LoadVcl: Boolean;
+begin
+  Result := LoadLibraryW(PWideChar(WideString('vcl' + AmsHostSuffix +
+                                              '.bpl'))) <> 0;
+end;
+
+{ ------------------------------------------------ Klassenkette und Anlegen - }
+
+procedure TestClassChain;
+var
+  Cls, Parent: Pointer;
+begin
+  Section('Klassenkette an den echten VMTs');
+  Cls := AmsSym(MOD_RTL, '@System@Classes@TComponent@');
+  Check('Klassenzeiger TComponent aus dem Package', Cls <> nil);
+  if Cls = nil then Exit;
+
+  { Stimmt vmtClassName (-56) nicht, steht hier Muell statt eines Namens. }
+  CheckEq('Klassenname aus dem VMT', 'TComponent', AmsClassNameOf(Cls));
+
+  { vmtParent (-48) zeigt auf einen ZEIGER auf die Klasse. Einmal zu wenig
+    dereferenziert kaeme hier kein lesbarer Name heraus. }
+  Parent := AmsClassParent(Cls);
+  CheckEq('Elternklasse von TComponent', 'TPersistent',
+          AmsClassNameOf(Parent));
+  CheckEq('Elternklasse von TPersistent', 'TObject',
+          AmsClassNameOf(AmsClassParent(Parent)));
+  Check('ueber TObject hinaus geht es nicht weiter',
+        AmsClassParent(AmsClassParent(Parent)) = nil);
+
+  Check('TComponent stammt von TPersistent ab',
+        AmsClassInheritsFrom(Cls, 'TPersistent'));
+  Check('TComponent stammt nicht von TControl ab',
+        not AmsClassInheritsFrom(Cls, 'TControl'));
+
+  { vmtInstanceSize (-52): eine TComponent-Instanz ist einige Dutzend Byte
+    gross - 0 oder ein Unsinnswert hiesse, der Offset stimmt nicht. }
+  Check('Instanzgroesse ist plausibel',
+        (AmsInstanceSize(Cls) > 16) and (AmsInstanceSize(Cls) < 4096),
+        IntToStr(AmsInstanceSize(Cls)));
+end;
+
+procedure TestCreateAndFree;
+var
+  Owner, Child: Pointer;
+begin
+  Section('Virtueller Konstruktor gegen die echte RTL');
+  if not LoadVcl then
+    WriteLn('  (vcl', AmsHostSuffix, '.bpl nicht ladbar - SetParent-Slot ',
+            'wird nicht geprueft)');
+
+  Check('Factory-Symbole gebunden', AmsBindFactory);
+  Check('bereit zum Anlegen', AmsFactoryReady, AmsLastError);
+  { Der Slot wird GESUCHT, nicht verdrahtet. Geprueft wird deshalb nicht
+    seine Zahl, sondern dass er gefunden wurde und wie ein Slot aussieht -
+    mit der naechsten Delphi-Version darf er sich verschieben. }
+  Check('Konstruktorslot gefunden', AmsCtorSlot >= 0, IntToStr(AmsCtorSlot));
+  Check('Konstruktorslot ist zeigerausgerichtet',
+        (AmsCtorSlot >= 0) and (AmsCtorSlot mod SizeOf(Pointer) = 0),
+        IntToStr(AmsCtorSlot));
+  WriteLn('        (Konstruktor auf VMT-Offset ', AmsCtorSlot,
+          ', TControl.SetParent auf ', AmsSetParentSlot, ')');
+  Check('SetParent-Slot gefunden', AmsSetParentSlot >= 0,
+        IntToStr(AmsSetParentSlot));
+
+  { Und jetzt wirklich: anlegen. }
+  Owner := AmsCreateComponent(AmsSym(MOD_RTL, '@System@Classes@TComponent@'),
+                              nil);
+  Check('TComponent angelegt', Owner <> nil, AmsLastError);
+  if Owner = nil then Exit;
+  CheckEq('es ist wirklich eine TComponent', 'TComponent',
+          AmsClassName(Owner));
+  Check('die Instanz stammt von TPersistent ab',
+        AmsInheritsFrom(Owner, 'TPersistent'));
+  CheckEq('frisch angelegt hat sie noch keine Kinder', '0',
+          IntToStr(AmsComponentCount(Owner)));
+
+  { Der Besitzer geht in ECX, nicht in EDX - dort steht das Flag des
+    Konstruktors. Landet er im falschen Register, haengt das Kind an
+    nichts und die Zahl unten bleibt 0. }
+  Child := AmsCreateComponent(AmsSym(MOD_RTL, '@System@Classes@TComponent@'),
+                              Owner);
+  Check('zweites TComponent mit Besitzer angelegt', Child <> nil,
+        AmsLastError);
+  CheckEq('der Besitzer kennt sein Kind', '1',
+          IntToStr(AmsComponentCount(Owner)));
+  Check('und liefert genau dieses', AmsComponent(Owner, 0) = Child);
+
+  { Auch schreiben laesst sich daran - der Name geht durch SetName des
+    Hosts, samt seiner Pruefung auf einen gueltigen Bezeichner. }
+  AmsSetStr(Child, 'Name', 'AmsProbe1');
+  CheckEq('Name gesetzt und wieder gelesen', 'AmsProbe1', AmsName(Child));
+
+  { Freigeben: der Besitzer nimmt sein Kind mit. Bleibt hier etwas stehen,
+    stimmt der Destruktorweg nicht - im Plugin waere das ein Leck im
+    Delphi-Heap bei jedem Entladen. }
+  hcObjectFree(Owner);
+  Check('freigegeben, ohne dass etwas kracht', True);
+end;
+
 procedure TestFontRtti;
 var
-  H: HMODULE;
   Cls, Obj: Pointer;
   Opt: string;
 begin
   Section('TFont - Aufzaehlungen, Mengen und Farben');
-  H := LoadLibraryW(PWideChar(WideString('vcl' + AmsHostSuffix + '.bpl')));
-  if H = 0 then
+  if not LoadVcl then
   begin
     WriteLn('  (vcl', AmsHostSuffix, '.bpl nicht ladbar - uebersprungen)');
     Exit;
@@ -216,6 +322,8 @@ begin
   end;
 
   TestComponentRtti;
+  TestClassChain;
+  TestCreateAndFree;
   TestFontRtti;
 
   WriteLn;

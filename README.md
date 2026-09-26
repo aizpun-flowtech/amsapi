@@ -64,6 +64,25 @@ begin
 end;
 ```
 
+Und was der Host **nicht** mitbringt, kommt dazu — eine Schaltfläche auf ein
+vorhandenes Panel, oder gleich eine Kopie einer vorhandenen:
+
+```pascal
+uses AmsApi.Factory;
+
+{ Neu: Klasse, Beschriftung, Zielcontainer }
+NewElement('TButton', 'Prüfen', 'pnUnten');
+
+{ Kopie eines vorhandenen Elements, woanders eingehängt.
+  True = der Klon ruft dieselbe Behandlung des Hosts wie das Original. }
+CloneElement('bbSpeichern', 'bmbBenutzerdefiniert', True);
+```
+
+Die Klasse muss dafür nicht registriert sein: findet `Classes.GetClass` sie
+nicht, wird ein Element derselben Klasse in der laufenden Oberfläche gesucht
+und dessen Klassenzeiger genommen. Angelegtes und Geklontes verschwindet beim
+Entladen wieder — wie jede Änderung.
+
 Den Namen dazu sucht man nicht im Quelltext, sondern im laufenden AMS: das
 Beispiel `samples\UiTweaks` bringt ein Suchfenster mit — Begriff eingeben,
 Treffer anklicken, Eigenschaft anklicken, fertige Patchzeile anwenden oder
@@ -184,8 +203,11 @@ build\finderdemo.exe
 ```
 
 Fährt das Win32-Suchfenster aus `samples\UiTweaks` durch: erzeugen, umbrechen,
-über Nachrichten bedienen, schließen, Fensterklasse abmelden. Das Fenster
-bleibt dabei versteckt und außerhalb des Bildes.
+über Nachrichten bedienen — auch Merken, Klonen, Neu und Entfernen —,
+schließen, Fensterklasse abmelden. Geprüft wird dabei, dass sich in keiner
+Breite zwei Bedienelemente überdecken und dass jeder Knopf ohne Host **sagt**,
+was fehlt, statt still nichts zu tun. Das Fenster bleibt versteckt und
+außerhalb des Bildes.
 
 ### RTTI gegen die installierten Packages
 
@@ -196,8 +218,15 @@ build\rttiprobe.exe
 Lädt `rtl230.bpl` und `vcl230.bpl` und liest die Typinformationen von
 `TComponent` und `TFont`. Damit sind die Offsets in `TTypeInfo`, `TTypeData`
 und `TPropInfo` belegt — die einzige Stelle, an der sich ein falscher Offset
-sonst erst im laufenden AMS zeigen würde. AMS muss dafür **installiert**, aber
-nicht gestartet sein; fehlt es, überspringt sich die Probe selbst.
+sonst erst im laufenden AMS zeigen würde.
+
+Dazu die Klassenkette (`vmtClassName`, `vmtParent`, `vmtInstanceSize`) und der
+**virtuelle Konstruktor aus `AmsApi.Factory`**: er wird gegen die echte
+Delphi-RTL aufgerufen, ein `TComponent` mit Besitzer angelegt, benannt und
+wieder freigegeben. Damit sind die Registerbelegung (`EAX`/`DL`/`ECX`) und der
+zur Laufzeit gesuchte VMT-Slot belegt, ohne dass AMS laufen muss. AMS muss
+dafür **installiert**, aber nicht gestartet sein; fehlt es, überspringt sich
+die Probe selbst.
 
 ### Ladepfad ohne AMS zu starten
 
@@ -258,6 +287,7 @@ Laufzeit-Log: `%TEMP%\<Name>.log` (pro Plugin eine eigene Datei, rollt bei 2 MB)
 | `AmsApi.Components` | Fenster- und Komponentenbaum, Wurzelliste, Suche | ja |
 | `AmsApi.Props` | Delphi-RTTI: welche Eigenschaften ein Element hat, welchen Typ, welche Werte erlaubt sind. Pfade (`Font.Size`), alles als Text, Änderungsjournal mit Rücknahme | ja |
 | `AmsApi.Ui` | **Vorhandene Elemente des Hosts finden und bearbeiten** — deaktivieren, umbenennen, Größe, Aussehen, `OnClick` übernehmen | ja |
+| `AmsApi.Factory` | **Elemente anlegen, klonen und einhängen** — virtueller Konstruktor über den zur Laufzeit gesuchten VMT-Slot, Eigenschaften und auf Wunsch Ereignisse kopieren; alles Angelegte wird beim Entladen abgeräumt | ja |
 | `AmsApi.Glyphs` | PNG→BMP32 + `AlphaFormat`, Symbol in ein Host-Element laden | teilweise |
 | `AmsApi.Menus` | dxBar-Popupmenüs lesen, `DirectClick` | ja |
 | `AmsApi.Ribbon` | Schaltflächen im Ribbon, Klick-Dispatch, sauberes Abklemmen | ja |
@@ -302,7 +332,7 @@ Abhängigkeiten laufen nur nach unten: `TraceWindow` → `Recorder` →
 | `samples\WebHook` | HTTP-Anfrage im Hintergrundthread, Ergebnis per `PostMessage` zurück in den UI-Thread |
 | `samples\RunAutomatismus` | Automatismus im aktuellen Kontext starten, mit brauchbarer Meldung, wenn er hier nicht angeboten wird |
 | `samples\Recorder` | **Verlaufsfenster im laufenden AMS**: ein Knopf öffnet es, darin läuft mit, was der Host tut — Klicks, Actions und SQL mit Dauer und Verschachtelung. Aufzeichnen in eine TSV-Datei ist ein Schalter darin, kein Muss |
-| `samples\UiTweaks` | **Suchfenster im laufenden AMS** (Win32, ohne VCL): Element suchen, Eigenschaft anklicken, fertige Patchzeile anwenden oder kopieren. Dazu Patches aus der `plugin.ini`, `OnClick` mithören und Rücknahme per Knopfdruck |
+| `samples\UiTweaks` | **Suchfenster im laufenden AMS** (Win32, ohne VCL): Element suchen, Eigenschaft anklicken, fertige Patchzeile anwenden oder kopieren. Dazu **bauen** — Vorlage merken, Kopie in einen anderen Container setzen, neues Element anlegen, eigene wieder entfernen. Und Patches aus der `plugin.ini`, `OnClick` mithören, Rücknahme per Knopfdruck |
 
 Die Symbole (`icon32.png`) sind Platzhalter aus `tools\mkicon.py` — durch
 eigene ersetzen.
