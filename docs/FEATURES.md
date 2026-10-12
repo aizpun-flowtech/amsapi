@@ -1,7 +1,7 @@
 # AmsApi — Funktionsumfang
 
 Was die Bibliothek kann, wozu man sie sonst Delphi, das Hersteller-SDK oder
-Reverse Engineering bräuchte. Stand 31.08.2026, Version 1.1.0.
+Reverse Engineering bräuchte. Stand 12.10.2026, Version 1.1.0.
 
 ## Belegstufen
 
@@ -365,15 +365,102 @@ Prototyp bzw. das `ScriptScheduler`-Plugin des Herstellers gescheitert.
 | `tools\exports.py` | T | Exportnamen aus BPL/DLL. Eigener PE-Parser, weil `pefile` bei großen Tabellen abschneidet (`afnBu.bpl`: ~34800 Symbole) |
 | `tools\mkicon.py` | T | Platzhalter-PNG erzeugen, nur Standardbibliothek |
 | `docs\HOST-ABI.md` | — | Der komplette Host-Vertrag: Ladevorgang, `IPlugin`, Konventionen, Symboltabelle, 12 Fallstricke |
-| Fünf Beispiel-Plugins | T | `HelloButton` (Minimalfall) · `WebHook` (Hintergrundthread → UI-Thread) · `RunAutomatismus` (Kontext-Automatismus mit brauchbarer Fehlermeldung) · `UiTweaks` (**Suchfenster im laufenden AMS**: suchen, patchen und **bauen** — merken, klonen, neu anlegen, wieder entfernen; dazu Patches aus der INI und `OnClick` übernehmen) · `Recorder` (**Verlaufsfenster im laufenden AMS**: zusehen, was der Host tut — Klicks, Actions, SQL mit Dauer und Verschachtelung; Aufzeichnen ist ein Schalter darin) |
+| Acht Beispiel-Plugins | T | `HelloButton` (Minimalfall) · `WebHook` (Hintergrundthread → UI-Thread) · `RunAutomatismus` (Kontext-Automatismus mit brauchbarer Fehlermeldung) · `UiTweaks` (**Suchfenster im laufenden AMS**: suchen, patchen und **bauen** — merken, klonen, neu anlegen, wieder entfernen; dazu Patches aus der INI und `OnClick` übernehmen) · `Recorder` (**Verlaufsfenster im laufenden AMS**: zusehen, was der Host tut — Klicks, Actions, SQL mit Dauer und Verschachtelung; Aufzeichnen ist ein Schalter darin) · `Doom` (**DOOM im laufenden AMS**) · `GdvTrace` (GDV-Import mitschneiden) · `PluginManager` (**Plugins aus Katalogen installieren, aktualisieren, einstellen**) |
 
 ---
 
-## 9. Was (noch) nicht drin ist
+## 9. Bildpuffer-Fenster, WAD und DOOM-Engine
+
+Was der Host für ein eigenes Bild nicht mitbringt, kommt dazu — als
+wiederverwendbare Units, nicht als Einzweck-Code im Beispiel. Der ganze Zweig
+braucht **keinen** Host und ist deshalb ohne AMS geprüft (`build\doomdemo.exe`);
+das fertige BPL lädt zusätzlich sauber über den echten `LoadPackage`-Pfad
+(`hosttest`).
+
+| Feature | Stufe | Detail |
+|---|---|---|
+| Bildpuffer-Fenster (`AmsApi.GameWindow`) | T · N | Rohes Win32-Fenster mit 32-Bit-DIBSection (top-down BGRA), Ausgabe per `StretchDIBits`, ganzzahlig skaliert mit 4:3-Rand. Derselbe VCL-freie Weg wie `finder.inc` |
+| Bildschleife im Host-Message-Loop | T · N | `SetTimer` treibt Rechnen + Ausgeben, modeless — die Nachrichtenschleife bleibt die von AMS. Bildratenunabhängig über gemessene ms |
+| Tastatur ohne Fokusklau | T · N | Zustandstabelle **und** Kanten-Warteschlange, nur bei Fokus; bei Fokusverlust werden alle Tasten losgelassen |
+| Sauberes Entladen | T · N | `Free` ruft `KillTimer`, `DestroyWindow`, `DeleteObject`, `UnregisterClass`. Instanz hängt in `GWL_USERDATA`, nicht an einer globalen — mehrere Fenster möglich |
+| DOOM-WAD lesen (`AmsApi.Wad`) | T | Header, Lump-Verzeichnis, Namenssuche, `PLAYPAL`, Flats (64×64), `patch_t`-Bilder mit Transparenz, `TEXTURE1`/`PNAMES`-Komposit. **Jeder** Zugriff bereichsgeprüft — ein kaputtes WAD liefert `False`, nie einen Absturz. Gegen ein erzeugtes IWAD geprüft |
+| **Echter DOOM-Kern** (`AmsApi.DoomCore` + `doomcore.dll`) | T · N | Der echte DOOM (doomgeneric, GPLv2) als 32-Bit-DLL, per `LoadLibrary` geladen und über `dg_start`/`dg_tick`/`dg_framebuffer`/`dg_key` getrieben. **Echte Level** (E1M1 …), Gegner, Waffen, volle Spiellogik, echte BSP-Grafik. Offscreen gegen `freedoom1.wad` gerendert (256000/256000 Pixel), außerdem über die echten Plugin-Units (`AmsApi.DoomCore`+`AmsApi.GameWindow`) end-to-end |
+| Sicher eingebettet | T · N | Ein fataler `I_Error` würde sonst per `exit()` **AMS mitreißen**. Minimaler Patch in `i_system.c`: `longjmp` zurück in die Shim, `dg_start`/`dg_tick` liefern dann `False`, der Host lebt weiter |
+| **Sound** (`native/dg_sound.c`) | N | doomgeneric ist ab Werk stumm (Sound nur hinter `FEATURE_SOUND` → SDL/Allegro). Eigenes Backend **ohne Fremd-DLL, nur über Windows-`winmm`**: **SFX** als Software-Mixer auf `waveOut` (DS*-Lumps werden auf `snd_samplerate` resampled + gecached, Feeder-Thread mischt 16 Kanäle mit Lautstärke/Panning), **Musik** per `mus2mid` → Temp-MIDI → MCI-Sequencer, Looping über `Poll()`. Registriert unter `DG_AMS_SOUND` als `DG_sound_module`/`DG_music_module` (nicht `FEATURE_SOUND`, das zieht SDL). Geräteausfall = Stille, nie Absturz. `dg_shutdown` stoppt Thread + Geräte **vor** `FreeLibrary` — Laden/Spielen/Entladen/Neuladen crashfrei geprüft |
+| Ersatz-Engine (`AmsApi.DoomEngine`) | T | Wenn DLL oder WAD fehlen: DDA-Raycaster in purem Pascal — texturierter Boden/Decke, Sprite-Gegner mit Z-Puffer, Waffe, HUD, Nahkampf-KI, Schießen. Das Plugin startet **in jedem Fall** |
+| Echte DOOM-Assets (Ersatz-Engine) | N | Mit einem WAD auch hier echte Palette/Texturen/Flats/Sprites; fehlt ein Lump, wird es über den nächsten Palettenindex erzeugt |
+| Als echter AMS-Tab | A · T | DOOM öffnet als **eigener Reiter „DOOM"** neben „Startseite" — im laufenden AMS bestätigt. Eine `TcxTabSheet` wird per virtuellem `SetParent` an das Dokument-Page-Control `TafncxPageControl` (`SessionPageControl`) gehängt; Schließen/`Y` entfernt den Reiter. `[Doom] Container=<Name>` bzw. `Mode=window` sind die Alternativen |
+| Tastatur bleibt beim Spiel | A · T | Der Host frisst Tastennachrichten (nur Alt-Kombis rutschen durch) und feuert eigene Kürzel (z.B. „Y" → Synchronisieren). Lösung: physisch pollen (`GetAsyncKeyState`) **und** solange die Fläche Fokus hat die Tastennachrichten per thread-lokalem `WH_GETMESSAGE`-Hook zu `WM_NULL` machen. Maus: links feuern, rechts benutzen |
+| Spielstände & Beenden | A · T | Saves/Config nach `%APPDATA%\AmsDoom` (Programmordner ist schreibgeschützt). „Quit" darf den Host **nicht** per `exit(0)` mitreißen: `D_Endoom`/`I_Quit` entschärft, `M_QuitResponse` meldet nur „schließen". Reopen lädt die DLL frisch (Singleton) → neues Spiel |
+
+---
+
+## 10. Plugin Manager — Plugins verteilen, installieren, einstellen
+
+Ein Ribbon-Knopf öffnet einen Plugin-Browser (`samples\PluginManager`). Alles
+Können steckt in Units, die einzeln wiederverwendbar sind — ein anderes
+Plugin kann etwa nur das Einstellungsfenster (`AmsApi.IniEditor`) oder nur den
+Neustart (`AmsApi.Process`) benutzen. Geprüft ohne AMS
+(`build\pluginmgrdemo.exe`, `build\browserdemo.exe`, `unittests`), dazu der
+Ladepfad der fertigen BPL über `hosttest`. **Im laufenden AMS noch nicht
+gegengeprüft** — daher überall höchstens T · N.
+
+### Woher die Plugins kommen (`AmsApi.PluginStore`)
+
+| Feature | Stufe | Detail |
+|---|---|---|
+| Katalog als INI | T | Ein Abschnitt je Plugin, Quelle als URL oder Pfad (auch `\\Server`), mehrere Kataloge, der erste gewinnt. Ordnername wird geprüft (`AmsIsSafeName`) |
+| GitHub ohne API | T | `Repo=github:o/r` (auch `https://github.com/o/r`, `.git`, `/tree/<zweig>/<pfad>` aus dem Browser). Paket und Metadaten aus `releases/latest/download/<Name>.zip` bzw. `.ini`, README und Bilder roh aus dem Repo. **Kein API-Aufruf**, also kein Limit von 60/h je Adresse. Gegen echte öffentliche Repos geprüft (Weiterleitung auf den CDN-Host, README mit Bildern) |
+| Private Repos | N | Mit Token: Release über die GitHub-API, Assets mit `Accept: application/octet-stream`, Rohdateien mit `Authorization`. Der Token geht **nur** an `github.com`, `api.github.com`, `raw.githubusercontent.com`; bei einer Weiterleitung auf einen anderen Host wird der Header entfernt. Token aus `[GitHub] Token=`, `TokenFile=` oder `AMS_GITHUB_TOKEN`. Ohne eigenes privates Repo noch nicht gegen GitHub gefahren |
+| Monorepo | T | `Path=` für Repos mit mehreren Plugins (wie dieses); Asset-Namen je Plugin eindeutig |
+| Ohne GitHub | T | `Base=` auf Webserver oder Ordner, relativ zum Katalog erlaubt. Flach (`build\release` unverändert kopiert) oder ein Ordner je Plugin; statt ZIP darf dort auch gleich der Plugin-Ordner liegen. End-to-End mit den echten Release-Assets aller acht Beispiele geprüft |
+| Festnageln und prüfen | T | `Tag=` statt neuestem Release, `Sha256=` — falsche Prüfsumme verwirft das Paket |
+| Metadaten | T | Kopf der `plugin.ini` (Name, Module, Version) plus Abschnitt `[Info]`: Title, Description (`\n` = Umbruch), Author, License, Homepage, Icon, Tags. AMS stört sich nicht an dem Abschnitt |
+| Versionen | T | `1.2.10 > 1.2.9`, führendes `v`, Vorabversionen (`-beta.2`) wie SemVer |
+| Zwischenspeicher | T | Kataloge, Metadaten und Bilder unter `%LOCALAPPDATA%\AmsPluginManager`; das Fenster zeigt sofort den letzten Stand und lädt im Hintergrund nach |
+
+### Installieren (`AmsApi.PluginStore` + `AmsApi.PluginApply`)
+
+| Feature | Stufe | Detail |
+|---|---|---|
+| Bereitstellen | T | Laden, SHA-256, entpacken mit **Zip-Slip-Schutz** (ganzes Archiv abgelehnt, bevor eine Datei geschrieben ist) und Größengrenze, `plugin.ini` prüfen (Name passt, Modul vorhanden) |
+| **Einstellungen des Anwenders bleiben** | T | Beim Aktualisieren werden geänderte Werte und selbst ergänzte Schlüssel (eigene `[Patch]`-Zeilen) in die neue `plugin.ini` übernommen; Name, Module, Version und `[Info]` bestimmt das Paket |
+| **Ersetzen, während AMS läuft** | T | Eine geladene BPL lässt sich nicht überschreiben, aber umbenennen. Sie wird als `.old` beiseite geschoben, die neue liegt sofort an ihrem Platz, AMS arbeitet bis zum Neustart mit der alten. Geprüft mit einer echt per `LoadLibraryEx` gemappten DLL. Reste räumt der nächste Lauf weg |
+| Sicherung und Rücknahme | T | Vorher wird der Plugin-Ordner gesichert; scheitert ein Schritt, wird zurückgespielt. Dateien, die nur im Ziel liegen (eine WAD neben DOOM), bleiben stehen |
+| Entfernen | T | `plugin.ini` zuerst — ohne sie ist der Ordner für AMS kein Plugin mehr, auch wenn eine gesperrte BPL bis zum Neustart als `.old` liegen bleibt |
+| **Rechte** | T · N | `BIN\plugins` ist für Benutzer schreibgeschützt. Ist der Ordner beschreibbar, läuft alles im Prozess; sonst startet `AmsPluginApply.exe` per UAC (`runas`) und arbeitet eine Warteschlange ab, AMS zeichnet währenddessen weiter. Helfer als Prozess geprüft, die UAC-Abfrage selbst nur im Code |
+| **Falle: UAC-Virtualisierung** | T | Ein 32-Bit-Programm **ohne Manifest** schreibt scheinbar erfolgreich nach Program Files — in Wahrheit nach `%LOCALAPPDATA%\VirtualStore`. Der Helfer bringt deshalb ein `asInvoker`-Manifest mit (der Test prüft es), und `AmsCanWriteDir` schaltet die Virtualisierung vor der Probe ab. AMS selbst hat ein Manifest |
+
+### Anzeigen und einstellen
+
+| Feature | Stufe | Detail |
+|---|---|---|
+| Plugin-Liste | T | 32-px-Bilder (PNG skaliert, sonst Buchstabe auf Farbe), Version (`1.0.0 → 1.1.0`), Zustand: nicht installiert / installiert / Update / lokal / neuer als Katalog / Neustart nötig. Suche über Titel, Name, Beschreibung, Autor, Tags; Filter |
+| **README aus dem Repo** | T | `AmsApi.Markdown` (GFM: Tabellen, Code, Listen, Aufgaben, Bilder, Roh-HTML) mit Kopfkarte (Bild, Titel, Autor, Lizenz, Versionen, Fehler der Quelle). Bilder werden vorab geholt und als `data:`-URI eingebettet — so gehen auch private Repos und Netzlaufwerke. `<script>`, `on*=`, `javascript:` werden entfernt, die Seite liegt per *Mark of the Web* in der Internetzone |
+| Eingebetteter Browser | T | IE-WebBrowser über `atl.dll`, ohne VCL und ohne ComObj (eigenes IDispatch). Links gehen an den Standardbrowser. Fehlt der Browser, ein Textfeld. Solange er lebt, sind FPU-Ausnahmen des UI-Threads maskiert (MSHTML verträgt sie nicht) — danach wiederhergestellt |
+| **Einstellungsfenster** | T | Jede `plugin.ini`: Liste aller Schlüssel, Beschreibung aus dem Kommentar über dem Schlüssel, Wert ändern (Enter), Textmodus, neu laden. Gespeichert wird nur der Wert — Kommentare, Reihenfolge, Schreibweise und BOM bleiben; ANSI bleibt ANSI. Was das Paket bestimmt, ist gesperrt. Speichern unter Program Files über denselben UAC-Helfer |
+| **Neustart-Dialog** | T · N | Nach Installieren, Aktualisieren, Entfernen und Speichern: „Jetzt neu starten“ / „Später“ (TaskDialog, sonst MessageBox). „Jetzt“ startet einen Wartehelfer (ohne erhöhte Rechte), schickt AMS `WM_CLOSE` — AMS fragt wie gewohnt nach — und startet es mit derselben Befehlszeile neu. Bricht der Anwender das Beenden ab, gibt der Helfer nach 3 Minuten auf. Wartehelfer als Prozess geprüft, das Beenden von AMS selbst nicht |
+| Release-Assets | T | `build.cmd` legt je Beispiel `build\release\<Name>.zip` + `.ini` und `SHA256SUMS.txt` an (`tools\mkrelease.lpr`, mit `AmsApi.Zip` gepackt). Was im Deploy-Ordner nur zufällig liegt (WAD, Logs, `.old`), kommt nicht hinein |
+
+> **Falle für alle UI-Units mit Umlauten:** In einer Unit mit `{$codepage
+> utf8}` ist `#$89` ein *Unicode-Zeichen* und wird als zwei UTF-8-Bytes
+> abgelegt. Ein Bytevergleich wie `Copy(Daten, 1, 4) = #$89'PNG'` geht dann
+> still daneben. Byte-Logik gehört deshalb in Units ohne diese Direktive
+> (`AmsSniffImageMime` in `AmsApi.Files`).
+
+---
+
+## 11. Was (noch) nicht drin ist
 
 | Punkt | Warum |
 |---|---|
 | **Action-Detour stürzt im echten AMS ab** | Der Hook auf `TafnAction.Execute` warf beim ersten Lauf eine Access violation - und zwar bevor `AmsHookCode` überhaupt zu seiner ersten Logzeile kam. Der Prolog ist unverdächtig (`55 8b ec 83 c4 f4`, sauber dekodierbar), der Verdacht liegt auf dem Zusammenspiel mit den kurz zuvor gesetzten SQL-Detours: ab da läuft ständig ein fremder AMS-Thread durch unseren Code, und das Einfrieren aller Threads traf ihn mitten darin. Zwei Ursachen sind deshalb schon beseitigt (kein Heap und kein Log mehr im eingefrorenen Zustand), der Beweis steht aber aus. Bis dahin ist SQL+Klicks der belegte Umfang |
+| Plugin Manager im echten AMS | Alles ohne AMS geprüft; der erste Lauf im laufenden AMS steht aus — insbesondere UAC-Abfrage aus AMS heraus, `WM_CLOSE` an das Hauptfenster beim Neustart und das Laden einer beiseite geschobenen BPL |
+| GitLab/Gitea als Kurzform | Nur `github:` hat Vorlagen. Andere Hosts gehen über `Base=` oder einzelne `Package=`/`Meta=`/`Readme=`-Adressen |
+| Proxy mit Anmeldung | WinHTTP nimmt den Proxy des Systems (auch PAC), meldet sich aber nicht selbst an. Verlangt der Proxy NTLM (`407`), scheitert der Abruf mit Klartext |
+| Code-Signatur der Pakete | Geprüft wird nur, was der Katalog verlangt (`Sha256=`). Wer den Katalog schreiben kann, bestimmt, was installiert wird — ihn also dort ablegen, wo nur Admins schreiben |
+| Terminalserver | Läuft AMS in anderen Sitzungen, sind dort die BPLs geladen; sie werden ebenfalls beiseite geschoben und greifen dort erst beim nächsten Start |
+| Tab-Taste in eigenen Fenstern | Die Nachrichtenschleife gehört AMS und ruft für fremde Fenster kein `IsDialogMessage`. Maus und Enter gehen |
 | Regressionsprobe im echten AMS | Steht aus. `AmsToolbox` auf die neue API umstellen und die A-Punkte nachfahren |
 | Kontextfreier Automatismus-Start | Bräuchte `TAutomatismus` per Delphi-Konstruktor (EAX=Klasse, DL=1, ECX=Owner, Session auf Stack) plus `SelektionByIdent` und `LoadTaskIntoEngine`. Inline-Assembler, Absturzrisiko. Nur gegen die Test-DB und nur bei echtem Bedarf |
 | Ribbon-Element wirklich entfernen | Wird nur abgeklemmt und unsichtbar gesetzt. Freigeben bräuchte den Delphi-Destruktor; das `TdxBarItem` gehört dem Host |

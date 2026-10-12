@@ -22,7 +22,7 @@ unit AmsApi.Glyphs;
 interface
 
 uses
-  Windows, SysUtils, Classes, FPImage, FPReadPNG, AmsApi.Types;
+  Windows, SysUtils, Classes, FPImage, FPReadPNG, FPReadBMP, AmsApi.Types;
 
 { 32-Bit-BMP schreiben. Oeffentlich, weil ohne Host testbar. }
 function AmsWriteBmp32(AImage: TFPMemoryImage; const ADestFile: string): Boolean;
@@ -38,6 +38,17 @@ function AmsEnsureLoadableBitmap(const ASourceFile: string;
     AmsSetGlyph(Item, 'LargeGlyph', 'icon32.png')
   Relative Pfade gelten ab dem Plugin-Ordner. }
 function AmsSetGlyph(AItem: Pointer; const APropName, AFile: string): Boolean;
+
+{ ------------------------------------------------ Fuer eigene Win32-Fenster
+  Ohne Host: PNG/BMP als quadratische 32-Bit-DIB-Section (ASize x ASize,
+  seitenrichtig skaliert und zentriert, Alpha VORMULTIPLIZIERT - so wie es
+  ImageList (comctl32 v6) und AlphaBlend erwarten). 0 bei Fehler.
+  Freigeben mit DeleteObject. }
+function AmsLoadImageBitmap(const AFile: string; ASize: Integer): HBITMAP;
+
+{ Platzhalter: abgerundetes Quadrat in AColor mit dem Anfangsbuchstaben. }
+function AmsPlaceholderBitmap(const AText: WideString; ASize: Integer;
+  AColor: COLORREF): HBITMAP;
 
 implementation
 
@@ -159,6 +170,170 @@ begin
     Img.Free;
     Rd.Free;
   end;
+end;
+
+{ ---------------------------------------------------- Win32-Bitmaps ------ }
+
+function NewDib(ASize: Integer; out ABits: PCardinal): HBITMAP;
+var
+  BI: TBitmapInfo;
+  P: Pointer;
+begin
+  FillChar(BI, SizeOf(BI), 0);
+  BI.bmiHeader.biSize := SizeOf(BI.bmiHeader);
+  BI.bmiHeader.biWidth := ASize;
+  BI.bmiHeader.biHeight := -ASize;          { top-down }
+  BI.bmiHeader.biPlanes := 1;
+  BI.bmiHeader.biBitCount := 32;
+  BI.bmiHeader.biCompression := BI_RGB;
+  P := nil;
+  Result := CreateDIBSection(0, BI, DIB_RGB_COLORS, P, 0, 0);
+  ABits := P;
+  if (Result <> 0) and (P <> nil) then
+    FillChar(P^, ASize * ASize * 4, 0);
+end;
+
+function AmsLoadImageBitmap(const AFile: string; ASize: Integer): HBITMAP;
+var
+  Img: TFPMemoryImage;
+  Rd: TFPCustomImageReader;
+  Ext: string;
+  Bits: PCardinal;
+  W, H, DW, DH, OX, OY, X, Y, SX, SY, SX0, SX1, SY0, SY1, n: Integer;
+  R, G, B, A: Cardinal;
+  C: TFPColor;
+  Ok: Boolean;
+begin
+  Result := 0;
+  if (ASize <= 0) or not FileExists(AFile) then Exit;
+  Ext := LowerCase(ExtractFileExt(AFile));
+  Img := TFPMemoryImage.Create(0, 0);
+  Rd := nil;
+  Ok := False;
+  try
+    try
+      if Ext = '.png' then Rd := TFPReaderPNG.Create
+      else if Ext = '.bmp' then Rd := TFPReaderBMP.Create
+      else Exit;
+      Img.LoadFromFile(AFile, Rd);
+      W := Img.Width;
+      H := Img.Height;
+      if (W <= 0) or (H <= 0) then Exit;
+      { seitenrichtig in ASize x ASize }
+      if W >= H then
+      begin
+        DW := ASize;
+        DH := (H * ASize + W div 2) div W;
+      end
+      else
+      begin
+        DH := ASize;
+        DW := (W * ASize + H div 2) div H;
+      end;
+      if DW < 1 then DW := 1;
+      if DH < 1 then DH := 1;
+      OX := (ASize - DW) div 2;
+      OY := (ASize - DH) div 2;
+      Result := NewDib(ASize, Bits);
+      if Result = 0 then Exit;
+      for Y := 0 to DH - 1 do
+        for X := 0 to DW - 1 do
+        begin
+          { Flaechenmittel ueber die Quellpixel dieses Zielpixels }
+          SX0 := X * W div DW;
+          SX1 := ((X + 1) * W - 1) div DW;
+          SY0 := Y * H div DH;
+          SY1 := ((Y + 1) * H - 1) div DH;
+          if SX1 < SX0 then SX1 := SX0;
+          if SY1 < SY0 then SY1 := SY0;
+          R := 0; G := 0; B := 0; A := 0; n := 0;
+          for SY := SY0 to SY1 do
+            for SX := SX0 to SX1 do
+            begin
+              C := Img.Colors[SX, SY];
+              { vormultipliziert mitteln, sonst faerben durchsichtige
+                Pixel die Kanten }
+              Inc(A, C.Alpha shr 8);
+              Inc(R, (Cardinal(C.Red shr 8) * (C.Alpha shr 8)) div 255);
+              Inc(G, (Cardinal(C.Green shr 8) * (C.Alpha shr 8)) div 255);
+              Inc(B, (Cardinal(C.Blue shr 8) * (C.Alpha shr 8)) div 255);
+              Inc(n);
+            end;
+          PCardinal(PByte(Bits) + ((OY + Y) * ASize + OX + X) * 4)^ :=
+            ((A div n) shl 24) or ((R div n) shl 16) or ((G div n) shl 8) or
+            (B div n);
+        end;
+      Ok := True;
+    except
+      on E: Exception do
+        AmsFailFmt('Bild nicht lesbar (%s): %s', [E.Message, AFile]);
+    end;
+  finally
+    Rd.Free;
+    Img.Free;
+    if not Ok and (Result <> 0) then
+    begin
+      DeleteObject(Result);
+      Result := 0;
+    end;
+  end;
+end;
+
+function AmsPlaceholderBitmap(const AText: WideString; ASize: Integer;
+  AColor: COLORREF): HBITMAP;
+var
+  Bits, P: PCardinal;
+  DC: HDC;
+  Old: HGDIOBJ;
+  F: HFONT;
+  OldF: HGDIOBJ;
+  R: TRect;
+  X, Y, Rad, DX, DY: Integer;
+  Inside: Boolean;
+  Letter: WideString;
+  Fill: Cardinal;
+begin
+  Result := NewDib(ASize, Bits);
+  if Result = 0 then Exit;
+  Rad := ASize div 5;
+  Fill := $FF000000 or (Cardinal(GetRValue(AColor)) shl 16) or
+          (Cardinal(GetGValue(AColor)) shl 8) or GetBValue(AColor);
+  for Y := 0 to ASize - 1 do
+    for X := 0 to ASize - 1 do
+    begin
+      DX := 0; DY := 0;
+      if X < Rad then DX := Rad - X else if X >= ASize - Rad then DX := X - (ASize - Rad - 1);
+      if Y < Rad then DY := Rad - Y else if Y >= ASize - Rad then DY := Y - (ASize - Rad - 1);
+      Inside := DX * DX + DY * DY <= Rad * Rad;
+      if Inside then
+        PCardinal(PByte(Bits) + (Y * ASize + X) * 4)^ := Fill;
+    end;
+  Letter := '';
+  if AText <> '' then Letter := WideUpperCase(Copy(AText, 1, 1));
+  if Letter = '' then Exit;
+  DC := CreateCompatibleDC(0);
+  Old := SelectObject(DC, Result);
+  F := CreateFontW(-(ASize * 5 div 8), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0,
+    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+    ANTIALIASED_QUALITY, DEFAULT_PITCH, 'Segoe UI');
+  OldF := SelectObject(DC, F);
+  SetBkMode(DC, TRANSPARENT);
+  SetTextColor(DC, RGB(255, 255, 255));
+  R := Rect(0, 0, ASize, ASize);
+  DrawTextW(DC, PWideChar(Letter), 1, R, DT_CENTER or DT_VCENTER or DT_SINGLELINE);
+  SelectObject(DC, OldF);
+  DeleteObject(F);
+  SelectObject(DC, Old);
+  DeleteDC(DC);
+  { GDI loescht beim Zeichnen den Alphakanal - innerhalb der Form wieder
+    deckend machen }
+  GdiFlush;
+  for Y := 0 to ASize - 1 do
+    for X := 0 to ASize - 1 do
+    begin
+      P := PCardinal(PByte(Bits) + (Y * ASize + X) * 4);
+      if (P^ <> 0) then P^ := P^ or $FF000000;
+    end;
 end;
 
 function AmsSetGlyph(AItem: Pointer; const APropName, AFile: string): Boolean;

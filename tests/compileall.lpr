@@ -10,7 +10,11 @@ uses
   AmsApi.Glyphs, AmsApi.Menus,
   AmsApi.Ribbon, AmsApi.Factory, AmsApi.Actions, AmsApi.Workflow,
   AmsApi.Automatismus,
-  AmsApi.Http, AmsApi.Plugin;
+  AmsApi.GameWindow, AmsApi.Wad, AmsApi.DoomEngine, AmsApi.DoomCore,
+  AmsApi.Http, AmsApi.Plugin, AmsApi.GdvTrace,
+  AmsApi.Files, AmsApi.Zip, AmsApi.IniDoc, AmsApi.Process, AmsApi.Dialogs,
+  AmsApi.Markdown, AmsApi.Browser, AmsApi.WinCtl, AmsApi.IniEditor,
+  AmsApi.PluginStore, AmsApi.PluginApply, AmsApi.PluginManager;
 begin
   WriteLn('AmsApi ', AMS_API_VERSION, ' - alle Units uebersetzt.');
 end.

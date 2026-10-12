@@ -10,3 +10,10 @@ samples/*/lib*.a
 
 # Werkzeuge
 tools/__pycache__/
+
+# Nativer DOOM-Kern: Zwischenstaende und Bauergebnis
+native/obj/
+native/*.obj
+native/*.exp
+native/*.lib
+native/doomcore.dll

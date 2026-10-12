@@ -209,6 +209,47 @@ Breite zwei Bedienelemente überdecken und dass jeder Knopf ohne Host **sagt**,
 was fehlt, statt still nichts zu tun. Das Fenster bleibt versteckt und
 außerhalb des Bildes.
 
+### DOOM-Engine ohne AMS
+
+```cmd
+build\doomdemo.exe
+```
+
+Prüft den kompletten Spiele-Zweig ohne Host: der WAD-Leser gegen ein im Test
+erzeugtes IWAD (Palette und Flat kommen byteweise richtig zurück), die Engine
+rendert nach ein paar Bildschritten ein **strukturiertes** Bild (nicht schwarz,
+viele Farben — Wände, Boden, Decke, Sprites) und legt es als
+`%TEMP%\amsapi_doom_frame.bmp` zum Ansehen ab, Schießen senkt die Gegnerzahl
+plausibel, und das Bildpuffer-Fenster läuft versteckt ein paar Frames und baut
+sich sauber wieder ab. Kein echtes `DOOM1.WAD` nötig.
+
+### HTML-Ansicht ohne AMS
+
+```cmd
+build\browserdemo.exe
+```
+
+Fährt die eingebettete HTML-Ansicht aus `AmsApi.Browser` durch, in der der
+Plugin Manager die README zeigt: IE-WebBrowser über `atl.dll`, Seiten laden
+bis `ReadyState = 4`, Titel lesen, abgefangene Navigation, und den Ersatzweg
+(schreibgeschütztes Textfeld), falls der Browser fehlt. Versteckt, ohne Reste.
+
+### Plugin Manager ohne AMS
+
+```cmd
+build\pluginmgrdemo.exe
+```
+
+Baut in `%TEMP%\amsapi_pmdemo\` einen Katalog auf einem lokalen „Server“ mit
+drei Plugins und einen Ersatz für `BIN\plugins` und bedient das Fenster wie
+ein Anwender: Liste mit Zuständen, Beschreibungsseite mit gerenderter README
+und eingebettetem Bild, **Installieren**, **Aktualisieren, während die BPL
+geladen ist** (genau wie im laufenden AMS) mitsamt Übernahme der Werte des
+Anwenders, Ablehnung bei falscher Prüfsumme, **Entfernen** mit Sicherung, die
+`plugin.ini` im Einstellungsfenster ändern, Suche und Filter. Danach den
+Helfer `AmsPluginApply.exe` als eigenen Prozess: Manifest vorhanden,
+`--apply` und `--restart`. Kein Netz nötig.
+
 ### RTTI gegen die installierten Packages
 
 ```cmd
@@ -269,6 +310,36 @@ copy /Y "build\deploy\HelloButton\*" ^
 > schreiben. Das ist die Installation des Anwenders und braucht
 > Administratorrechte — den Kopierbefehl übergeben und ihn ausführen lassen.
 
+### Über den Plugin Manager
+
+Einmal `PluginManager` von Hand kopieren — danach geht alles Weitere aus AMS
+heraus (Ribbon-Knopf **Plugin Manager**). `build.cmd` legt dafür je Plugin
+die Release-Assets ab:
+
+```
+build\release\<Name>.zip     ganzer Plugin-Ordner (BPL, plugin.ini, Bild, README)
+build\release\<Name>.ini     nur die plugin.ini - Version und Beschreibung
+build\release\SHA256SUMS.txt Prüfsummen, für Sha256= im Katalog
+```
+
+Veröffentlichen auf GitHub:
+
+```cmd
+gh release create v1.1.0 build\release\*.zip build\release\*.ini
+```
+
+Der Katalog (`samples\PluginManager\katalog.ini`) nennt je Plugin nur das Repo
+und den Unterordner; der Manager holt das neueste Release, die README und das
+Bild selbst. Ohne GitHub: `build\release` unverändert auf ein Netzlaufwerk
+kopieren und im Katalog `Base=\\server\ams\plugins\` eintragen.
+
+**Warum nicht `git clone`?** Auf den Arbeitsplätzen gibt es weder `git` noch
+einen Compiler, und ein Repo enthält Quelltext, keine BPL. Das Repo bleibt die
+Quelle der Wahrheit (README, Bilder, `plugin.ini` mit `[Info]`), ausgeliefert
+wird das fertige Release-Paket — ohne GitHub-API, also ohne deren Limit von 60
+Anfragen je Stunde und Adresse, das eine Firma hinter einer gemeinsamen
+Adresse sofort träfe. Private Repos gehen mit Token (dann über die API).
+
 Laufzeit-Log: `%TEMP%\<Name>.log` (pro Plugin eine eigene Datei, rollt bei 2 MB).
 
 ---
@@ -298,11 +369,33 @@ Laufzeit-Log: `%TEMP%\<Name>.log` (pro Plugin eine eigene Datei, rollt bei 2 MB)
 | `AmsApi.Trace` | Zeitachse mit Verschachtelung und Dauer, als TSV. Beantwortet "was loest was aus" | – |
 | `AmsApi.Recorder` | **Mitschreiben, was AMS tut** — SQL, `TafnAction`/`TafnEvent`, jeder Klick | ja |
 | `AmsApi.TraceWindow` | **Verlaufsfenster, das mitläuft** — zusehen ohne Aufzeichnen, Aufzeichnen auf Knopfdruck | ja |
+| `AmsApi.GameWindow` | **Bildpuffer-Fenster** — rohe Win32-Fläche mit 32-Bit-DIB, `StretchDIBits`-Ausgabe, Tastatur und Bildschleife. Was der Host für ein Spiel nicht mitbringt | – |
+| `AmsApi.Wad` | **DOOM-WAD lesen** — Header, Lump-Verzeichnis, `PLAYPAL`, Flats, `patch_t`-Bilder, `TEXTURE1`/`PNAMES`; alles bereichsgeprüft | – |
+| `AmsApi.DoomEngine` | **Ersatz-DOOM-Engine (pures Pascal)** — Raycaster mit texturiertem Boden/Decke, Sprite-Gegnern, Waffe und HUD; läuft ohne alles, benutzt WAD-Assets wenn vorhanden | – |
+| `AmsApi.DoomCore` | **Der echte DOOM-Kern** — lädt `doomcore.dll` (doomgeneric, GPLv2) und treibt ihn: echtes DOOM mit echten Leveln aus einem IWAD. Bild kommt aus der DLL, wir blitten es | – |
+| `AmsApi.Files` | Dateien roh lesen/schreiben, UTF-8/ANSI erkennen, Base64 und `data:`-URIs, SHA-256 (bcrypt), Ordnerbäume, **geladene BPL ersetzen** (beiseite umbenennen), Schreibrechte prüfen ohne UAC-Virtualisierung | – |
+| `AmsApi.Zip` | ZIP prüfen, entpacken (Zip-Slip- und Zip-Bomben-Schutz), packen | – |
+| `AmsApi.IniDoc` | INI **bearbeiten**, ohne Kommentare und Layout zu verlieren; Beschreibung je Schlüssel aus dem Kommentar darüber; Benutzerwerte in eine neue Fassung übernehmen | – |
+| `AmsApi.Process` | Programm mit UAC starten und warten (AMS zeichnet weiter), **AMS neu starten** über einen Wartehelfer, Prozess überlebt AMS | – |
+| `AmsApi.Dialogs` | Rückfragen mit eigenen Knöpfen (TaskDialog, sonst MessageBox), Neustart-Frage | – |
+| `AmsApi.Markdown` | **Markdown → HTML** (GFM: Tabellen, Code, Listen, Bilder, Roh-HTML bereinigt) und eine fertige Seite im GitHub-Stil | – |
+| `AmsApi.Browser` | **Eingebettete HTML-Ansicht** (IE-WebBrowser über `atl.dll`), Links gehen in den Standardbrowser; ohne Browser ein Textfeld | – |
+| `AmsApi.WinCtl` | Bausteine für VCL-freie Fenster: Systemschriften, ListView mit Symbolen, ImageList | – |
+| `AmsApi.IniEditor` | **Einstellungsfenster** für eine INI: Liste, Beschreibung aus den Kommentaren, Textmodus, gesperrte Schlüssel, eigener Speicherweg | – |
+| `AmsApi.PluginStore` | **Woher Plugins kommen**: Katalog, GitHub-Releases/Base=-Quellen, installierte Plugins, Versionen, Paket bereitstellen | – |
+| `AmsApi.PluginApply` | Installieren/Ersetzen/Entfernen in `BIN\plugins` mit Sicherung und Rücknahme — im Prozess oder im UAC-Helfer | – |
+| `AmsApi.PluginManager` | **Plugin-Browser**: Liste mit Bild und Zustand, README, Installieren, Einstellungen, Neustart-Dialog | – |
 | `AmsApi.Plugin` | `TAmsPlugin`-Basisklasse und Export-Boilerplate | ja |
 
 Abhängigkeiten laufen nur nach unten: `TraceWindow` → `Recorder` →
 `Ui`/`Hook`/`Trace` · `Plugin` → `Ribbon`/`Automatismus`/`Ui` →
 `Menus`/`Components`/`Props` → `Rtti` → `Strings` → `Bind` → `Log`/`Types`.
+Der Spiele-Zweig steht daneben und braucht den Host nicht:
+`DoomEngine` → `Wad`/`GameWindow` → `Log`, dazu `DoomCore` → `Log` (lädt den
+echten DOOM-Kern `doomcore.dll`, siehe `native\`).
+Ebenso der Plugin-Manager-Zweig, ganz ohne Host-Symbole:
+`PluginManager` → `PluginStore`/`PluginApply`/`IniEditor`/`Browser`/`Markdown`
+→ `IniDoc`/`Zip`/`Http`/`Process`/`Dialogs`/`WinCtl` → `Files` → `Log`.
 
 ---
 
@@ -332,10 +425,17 @@ Abhängigkeiten laufen nur nach unten: `TraceWindow` → `Recorder` →
 | `samples\WebHook` | HTTP-Anfrage im Hintergrundthread, Ergebnis per `PostMessage` zurück in den UI-Thread |
 | `samples\RunAutomatismus` | Automatismus im aktuellen Kontext starten, mit brauchbarer Meldung, wenn er hier nicht angeboten wird |
 | `samples\Recorder` | **Verlaufsfenster im laufenden AMS**: ein Knopf öffnet es, darin läuft mit, was der Host tut — Klicks, Actions und SQL mit Dauer und Verschachtelung. Aufzeichnen in eine TSV-Datei ist ein Schalter darin, kein Muss |
+| `samples\GdvTrace` | **GDV-Import mitschneiden**: ein Ribbon-Knopf öffnet das Verlaufsfenster, darin läuft der GDV-Import verschachtelt mit — Einlesen/Zuordnen/Schreiben, welche JS-Funktion des Übersetzungsscripts wann läuft (`Sparte()`, `Identify()`, `ExportKunde/Vertrag()`), welche Host-Objekte das Script bekommt, und mit `Feldebene=1` jeder einzelne GDV-Feldzugriff (`Gdv.GetValue`). Zeigt, wie das `contecto_gdvams`-Script zur Laufzeit benutzt wird. Hooks per Reverse-Engineering (siehe `amsreverse/amsgdv`) |
 | `samples\UiTweaks` | **Suchfenster im laufenden AMS** (Win32, ohne VCL): Element suchen, Eigenschaft anklicken, fertige Patchzeile anwenden oder kopieren. Dazu **bauen** — Vorlage merken, Kopie in einen anderen Container setzen, neues Element anlegen, eigene wieder entfernen. Und Patches aus der `plugin.ini`, `OnClick` mithören, Rücknahme per Knopfdruck |
+| `samples\PluginManager` | **Plugin Manager im Ribbon**: Plugins aus Katalogen (GitHub-Repos, Webserver, Netzlaufwerk) suchen und filtern, mit Bild, Autor, Version und der **README aus dem Repo** ansehen, installieren, aktualisieren (eigene Einstellungen bleiben), entfernen, jede `plugin.ini` im **Einstellungsfenster** bearbeiten; danach **„Jetzt neu starten / Später“**. Weil `BIN\plugins` für Benutzer schreibgeschützt ist, kopiert `AmsPluginApply.exe` (liegt daneben) per UAC. Woher die Plugins kommen, steht in `plugin.ini` unter `[Katalog]`, das Format in `katalog.ini` |
+| `samples\Doom` | **DOOM im laufenden AMS**, eingebettet (kein eigenes Fenster). Ein Ribbon-Knopf hängt eine Spielfläche in AMS. Mit `doomcore.dll` (siehe `native\`) und einem IWAD läuft der **echte DOOM-Kern mit echten Leveln** (E1M1 …, Gegner, Waffen, Spiellogik); fehlt DLL oder WAD, springt die pure-Pascal-Ersatz-Engine ein. Zeigt: Bildpuffer-Fläche als `WS_CHILD` in den Host hängen (`AmsApi.GameWindow`), einen nativen Fremdkern laden und treiben (`AmsApi.DoomCore`), Bildschleife im Message-Loop von AMS |
 
 Die Symbole (`icon32.png`) sind Platzhalter aus `tools\mkicon.py` — durch
-eigene ersetzen.
+eigene ersetzen. Für **echtes** DOOM: einmal `native\get_doomgeneric.cmd` und
+`native\build_doomcore.bat` (braucht Visual Studio), dann eine `DOOM1.WAD`
+(Shareware genügt) oder `freedoom1.wad` neben die BPL oder in `plugin.ini` unter
+`Wad=`. Einbetten in einen bestimmten AMS-Tab: dessen Elementnamen mit
+`samples\UiTweaks` suchen und in `plugin.ini` unter `Container=` eintragen.
 
 ---
 

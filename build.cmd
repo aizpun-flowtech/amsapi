@@ -7,6 +7,9 @@ rem  64-Bit-BPL laesst sich vom Host gar nicht erst laden.
 rem
 rem    build.cmd            alles bauen
 rem    build.cmd HelloButton   nur dieses Beispiel
+rem
+rem  Ergebnis: build\deploy\<Name>\ (zum Kopieren nach BIN\plugins) und
+rem  build\release\<Name>.zip + .ini (Release-Assets fuer den Plugin Manager)
 rem ===========================================================================
 setlocal enabledelayedexpansion
 
@@ -30,6 +33,9 @@ if not "%~1"=="" goto :one
 rem ---------------------------------------------------------------- Bibliothek
 echo [1/4] Bibliothek uebersetzen
 "%PPC%" %OPT% -FE"%OUT%" "%ROOT%tests\compileall.lpr"
+if errorlevel 1 goto :fail
+rem  Werkzeug fuer die Release-Assets (siehe :build)
+"%PPC%" %OPT% -FE"%OUT%" "%ROOT%tools\mkrelease.lpr"
 if errorlevel 1 goto :fail
 
 rem --------------------------------------------------------------------- Tests
@@ -55,6 +61,31 @@ rem  versteckt und ausserhalb des Bildes.
 "%PPC%" %OPT% -FE"%OUT%" "%ROOT%tests\tracewindemo.lpr"
 if errorlevel 1 goto :fail
 "%OUT%\tracewindemo.exe"
+if errorlevel 1 goto :fail
+
+rem  Rauchtest der DOOM-Engine, des Bildpuffer-Fensters und des WAD-Lesers
+rem  aus samples\Doom - WAD-Parser gegen ein erzeugtes IWAD, ein gerendertes
+rem  Bild nach %TEMP% und ein versteckt laufendes Spielfenster. Ohne AMS.
+"%PPC%" %OPT% -FE"%OUT%" "%ROOT%tests\doomdemo.lpr"
+if errorlevel 1 goto :fail
+"%OUT%\doomdemo.exe"
+if errorlevel 1 goto :fail
+
+rem  Rauchtest der eingebetteten HTML-Ansicht (README im Plugin Manager):
+rem  IE-Control ueber atl.dll, sonst Ersatz-Textfeld. Ohne AMS, versteckt.
+"%PPC%" %OPT% -FE"%OUT%" "%ROOT%tests\browserdemo.lpr"
+if errorlevel 1 goto :fail
+"%OUT%\browserdemo.exe"
+if errorlevel 1 goto :fail
+
+rem  Rauchtest des Plugin Managers: Katalog auf einem lokalen "Server",
+rem  installieren, aktualisieren (bei geladener BPL), entfernen, Einstellungen,
+rem  dazu der UAC-/Neustart-Helfer als eigener Prozess. Ohne AMS, ohne Netz.
+"%PPC%" %OPT% -FE"%OUT%" "%ROOT%samples\PluginManager\AmsPluginApply.lpr"
+if errorlevel 1 goto :fail
+"%PPC%" %OPT% -FE"%OUT%" "%ROOT%tests\pluginmgrdemo.lpr"
+if errorlevel 1 goto :fail
+"%OUT%\pluginmgrdemo.exe"
 if errorlevel 1 goto :fail
 
 rem ------------------------------------------- RTTI gegen die Host-Packages
@@ -98,6 +129,21 @@ if errorlevel 1 exit /b 1
 copy /Y "%DIR%\plugin.ini" "%DEPLOY%\plugin.ini" >nul
 if exist "%DIR%\icon32.png" copy /Y "%DIR%\icon32.png" "%DEPLOY%\" >nul
 if exist "%DIR%\icon16.png" copy /Y "%DIR%\icon16.png" "%DEPLOY%\" >nul
+rem  Die README zeigt der Plugin Manager auch ohne Netz an
+if exist "%DIR%\README.md" copy /Y "%DIR%\README.md" "%DEPLOY%\" >nul
+rem  Der Plugin Manager bringt seinen UAC-/Neustart-Helfer mit
+if /I "%NAME%"=="PluginManager" (
+  "%PPC%" %OPT% -FE"%DEPLOY%" "%DIR%\AmsPluginApply.lpr"
+  if errorlevel 1 exit /b 1
+)
+rem  Doom bringt zusaetzlich den echten DOOM-Kern mit, falls schon gebaut
+rem  (native\build_doomcore.bat). Ohne DLL laeuft das Plugin mit der
+rem  Ersatz-Engine, deshalb ist das kein Fehler.
+if /I "%NAME%"=="Doom" if exist "%ROOT%native\doomcore.dll" copy /Y "%ROOT%native\doomcore.dll" "%DEPLOY%\" >nul
+rem  Release-Assets fuer den Plugin Manager: <Name>.zip + <Name>.ini
+rem  (hochladen: gh release create vX.Y.Z build\release\*)
+if not exist "%OUT%\mkrelease.exe" "%PPC%" %OPT% -FE"%OUT%" "%ROOT%tools\mkrelease.lpr" >nul
+if exist "%OUT%\mkrelease.exe" "%OUT%\mkrelease.exe" "%DEPLOY%" "%OUT%\release" "%NAME%"
 exit /b 0
 
 :fail

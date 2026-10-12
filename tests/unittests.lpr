@@ -19,7 +19,9 @@ uses
   Windows, SysUtils, Classes, FPImage, FPWritePNG,
   AmsApi.Types, AmsApi.Log, AmsApi.Ini, AmsApi.Strings, AmsApi.Glyphs,
   AmsApi.Bind, AmsApi.Props, AmsApi.Ui, AmsApi.Hook, AmsApi.Trace,
-  AmsApi.Recorder, AmsApi.Rtti, AmsApi.Factory;
+  AmsApi.Recorder, AmsApi.Rtti, AmsApi.Factory, Zipper, AmsApi.Files,
+  AmsApi.Zip, AmsApi.IniDoc, AmsApi.Markdown, AmsApi.PluginStore,
+  AmsApi.PluginApply, AmsApi.Process, AmsApi.Dialogs;
 
 var
   gRun: Integer = 0;
@@ -850,6 +852,508 @@ begin
   CheckEq('Abraeumen ohne Angelegtes', '0', IntToStr(AmsFactoryRelease));
 end;
 
+{ --------------------------------------------------------- Markdown ------
+  Gehoert in tests\unittests.lpr; braucht AmsApi.Markdown in der uses-Liste
+  und einen Aufruf TestMarkdown im Hauptblock. }
+
+procedure TestMarkdown;
+var
+  O: TAmsMarkdownOptions;
+  R: string;
+
+  function Md(const S: string): string;
+  begin
+    Result := Trim(AmsMarkdownToHtml(S, AmsMarkdownDefaults));
+  end;
+
+begin
+  Section('Markdown nach HTML (README-Anzeige)');
+
+  CheckEq('Ueberschrift mit GitHub-Anker',
+          '<h2 id="die-units--teil-2">Die Units &amp; Teil 2!</h2>',
+          Md('## Die Units & Teil 2!'));
+  CheckEq('Setext-Ueberschrift', '<h2 id="titel">Titel</h2>',
+          Md('Titel'#10'---'));
+  CheckEq('fett und kursiv', '<p><strong>x</strong> und <em>y</em></p>',
+          Md('**x** und _y_'));
+  { Die beiden Fallen schlechthin: snake_case darf nicht kursiv werden,
+    und in Code bleibt Markdown Markdown. }
+  CheckEq('snake_case bleibt', '<p>mein_schoener_name</p>',
+          Md('mein_schoener_name'));
+  CheckEq('** in Code bleibt', '<p><code>**x**</code></p>', Md('`**x**`'));
+  CheckEq('einfache Tilde bleibt', '<p>ca. ~5 min</p>', Md('ca. ~5 min'));
+  CheckEq('Codeblock escaped < und &',
+          '<pre><code class="language-pascal">if a &lt; b then s := &#39;&amp;&#39;;'#10 +
+          '</code></pre>',
+          Md('```pascal'#10'if a < b then s := ''&'';'#10'```'));
+  CheckEq('verschachtelte Liste',
+          '<ul>'#10'<li>a'#10'<ul>'#10'<li>b</li>'#10'</ul></li>'#10 +
+          '<li>c</li>'#10'</ul>',
+          Md('- a'#10'  - b'#10'- c'));
+  R := Md('- [ ] offen'#10'- [x] fertig');
+  Check('Aufgabenliste', (Pos('<input type="checkbox" disabled> offen', R) > 0) and
+        (Pos('disabled checked> fertig', R) > 0), R);
+  R := Md('| L | M | R |'#10'|:--|:-:|--:|'#10'| a | `b\|c` | 1 |');
+  Check('Tabelle mit Ausrichtung',
+        (Pos('<th style="text-align:center">M</th>', R) > 0) and
+        (Pos('<td style="text-align:right">1</td>', R) > 0), R);
+  Check('Tabelle: \| bleibt in der Zelle', Pos('<code>b|c</code>', R) > 0, R);
+  CheckEq('externer Link im neuen Fenster',
+          '<p><a href="https://github.com" target="_blank" rel="noopener">G</a></p>',
+          Md('[G](https://github.com)'));
+  CheckEq('Referenzlink, & im Ziel escaped',
+          '<p><a href="/x?a=1&amp;b=2">x</a></p>',
+          Md('[x][r]'#10#10'[r]: /x?a=1&b=2'));
+  R := Md('Siehe https://github.com/aizpun-flowtech/amsapi.');
+  Check('nackte URL ohne Satzpunkt',
+        Pos('>https://github.com/aizpun-flowtech/amsapi</a>.', R) > 0, R);
+
+  O := AmsMarkdownDefaults;
+  O.ImageBase := 'https://raw.githubusercontent.com/o/r/HEAD/docs/';
+  R := Trim(AmsMarkdownToHtml('![x](../img/a.png)', O));
+  Check('relatives Bild mit ../',
+        Pos('src="https://raw.githubusercontent.com/o/r/HEAD/img/a.png"', R) > 0, R);
+  R := Trim(AmsMarkdownToHtml(
+         '<p align="center"><img src="./logo.png" onerror="alert(1)"></p>', O));
+  Check('Roh-HTML-<img> relativ aufgeloest',
+        Pos('src="https://raw.githubusercontent.com/o/r/HEAD/docs/logo.png"', R) > 0, R);
+  Check('onerror entfernt', Pos('onerror', R) = 0, R);
+
+  CheckEq('<script> samt Inhalt weg', '<p>Text  weiter</p>',
+          Md('Text <script>alert(1)</script> weiter'));
+  CheckEq('javascript:-Link wird Text', '<p>x</p>', Md('[x](javascript:alert(1))'));
+  R := Md('<a href="jav&#x61;script:alert(1)">x</a>');
+  Check('verschleiertes javascript: entfernt', Pos('script', R) = 0, R);
+  CheckEq('nacktes & escaped, Entities bleiben',
+          '<p>A &amp; B &amp; C &copy;</p>', Md('A & B &amp; C &copy;'));
+  CheckEq('UTF-8 laeuft unveraendert durch',
+          '<p>'#$C3#$9C'bersicht</p>', Md(#$EF#$BB#$BF + #$C3#$9C'bersicht'));
+
+  CheckEq('URL ../', 'https://h/a/c.png', AmsResolveUrl('https://h/a/b/', '../c.png'));
+  CheckEq('URL ab Wurzel', 'https://h/x.png', AmsResolveUrl('https://h/a/b/', '/x.png'));
+  CheckEq('Ordner, / wird \, Query weg', 'C:\p\a.png',
+          AmsResolveUrl('C:\p\X\', '../a.png?raw=true'));
+  CheckEq('Sanitize: Formular weg, Text bleibt', 'Text',
+          AmsSanitizeHtml('<form action="x"><input name="p">Text</form>'));
+
+  { Muell darf nie zu einer Exception oder Endlosschleife fuehren. }
+  AmsMarkdownToHtml(StringOfChar('[', 20000), AmsMarkdownDefaults);
+  AmsMarkdownToHtml(StringOfChar('>', 5000) + ' x', AmsMarkdownDefaults);
+  AmsMarkdownToHtml(#0#1#2#3'<a href="'#10'```'#10'| - |'#10'[x](',
+                    AmsMarkdownDefaults);
+  Check('Muell ohne Absturz', True);
+
+  R := AmsHtmlPage('A & B', '<p>x</p>');
+  Check('Seite: Mark of the Web direkt hinter dem Doctype',
+        Copy(R, 1, 61) = '<!DOCTYPE html>'#13#10 +
+                         '<!-- saved from url=(0014)about:internet -->', R);
+  Check('Seite: IE=edge, UTF-8, escapter Titel',
+        (Pos('content="IE=edge"', R) > 0) and (Pos('<meta charset="utf-8">', R) > 0) and
+        (Pos('<title>A &amp; B</title>', R) > 0), '');
+end;
+
+{ ---------------------------------------------- Dateien, Text, Pruefsummen }
+
+procedure TestFiles;
+var
+  D, S, Ren, Dir: string;
+  W: WideString;
+  Lock: HMODULE;
+begin
+  Section('Dateien, Text, Pruefsummen (Plugin Manager)');
+  CheckEq('SHA-256 "abc"',
+    'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    AmsSha256('abc'));
+  CheckEq('SHA-256 leer',
+    'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    AmsSha256(''));
+  CheckEq('Base64', 'SGVsbG8hPw==', AmsBase64Encode('Hello!?'));
+  Check('Base64 hin und zurueck', AmsBase64Decode(AmsBase64Encode(#0#1#255'xy'), D) and
+        (D = #0#1#255'xy'));
+  Check('UTF-8 erkannt', AmsIsUtf8('Gr'#$C3#$BC#$C3#$9F'e'));
+  Check('ANSI ist kein UTF-8', not AmsIsUtf8('Gr'#$FC#$DF));
+  W := AmsDecodeText('Gr'#$C3#$BC#$C3#$9F'e');
+  Check('UTF-8 dekodiert', (Length(W) = 5) and (Ord(W[3]) = $FC));
+  W := AmsDecodeText('Gr'#$FC'n');
+  Check('ANSI dekodiert', (Length(W) = 4) and (Ord(W[3]) = $FC));
+  CheckEq('nach UTF-8 umkodiert', 'Gr'#$C3#$BC'n', AmsToUtf8('Gr'#$FC'n'));
+  Check('BOM weg', AmsStripBom(#$EF#$BB#$BF'x') = 'x');
+  CheckEq('PNG am Inhalt', 'image/png', AmsSniffImageMime(#$89'PNG'#13#10#26#10));
+  CheckEq('SVG am Inhalt', 'image/svg+xml',
+          AmsSniffImageMime('<?xml version="1.0"?><svg xmlns="x"/>'));
+  CheckEq('HTML ist kein Bild', '', AmsSniffImageMime('<!DOCTYPE html><html>'));
+  CheckEq('MIME nach Endung', 'image/jpeg', AmsMimeOf('https://x/y/bild.JPG?raw=1'));
+
+  Check('Name ok', AmsIsSafeName('HelloButton'));
+  Check('Name .. abgelehnt', not AmsIsSafeName('..'));
+  Check('Name mit \ abgelehnt', not AmsIsSafeName('a\b'));
+  Check('Name mit / abgelehnt', not AmsIsSafeName('a/b'));
+  Check('Name mit : abgelehnt', not AmsIsSafeName('C:'));
+  Check('Name mit Punkt am Ende abgelehnt', not AmsIsSafeName('x.'));
+  Check('relativer Pfad ok', AmsIsSafeRelPath('sub\datei.txt'));
+  Check('.. abgelehnt', not AmsIsSafeRelPath('..\boese.dll'));
+  Check('versteckt .. abgelehnt', not AmsIsSafeRelPath('a/../../boese.dll'));
+  Check('absolut abgelehnt', not AmsIsSafeRelPath('C:\Windows\x.dll'));
+  Check('fuehrender Trenner abgelehnt', not AmsIsSafeRelPath('\x.dll'));
+
+  Dir := gTmp + 'amsapi_files\';
+  AmsDeleteTree(Dir);
+  Check('schreiben legt Ordner an', AmsWriteFileRaw(Dir + 'a\b\c.txt', 'x'));
+  Check('beschreibbar', AmsCanWriteDir(Dir));
+  Check('fehlender Ordner nicht beschreibbar', not AmsCanWriteDir(Dir + 'nix'));
+  Check('nicht virtualisiert', not AmsIsVirtualized);
+
+  { Eine geladene DLL laesst sich nicht ueberschreiben - aber beiseite
+    schieben. Genau so liegt eine BPL im laufenden AMS. }
+  CopyFileW(PWideChar(WideString(AmsExpandEnv('%SystemRoot%\SysWOW64\atl.dll'))),
+            PWideChar(WideString(Dir + 'geladen.bpl')), False);
+  AmsWriteFileRaw(Dir + 'neu.bpl', 'NEU');
+  Lock := LoadLibraryExW(PWideChar(WideString(Dir + 'geladen.bpl')), 0,
+                         DONT_RESOLVE_DLL_REFERENCES);
+  Check('Testdatei geladen', Lock <> 0);
+  Check('ersetzt trotz Sperre', AmsReplaceFile(Dir + 'neu.bpl',
+        Dir + 'geladen.bpl', Ren));
+  Check('Original beiseite', (Ren <> '') and FileExists(Ren), Ren);
+  Check('neuer Inhalt an seinem Platz', AmsReadFileRaw(Dir + 'geladen.bpl', S) and
+        (S = 'NEU'));
+  Check('.old noch gesperrt', AmsCleanupOld(Dir) = 0);
+  if Lock <> 0 then FreeLibrary(Lock);
+  CheckEq('.old nach dem Freigeben weg', '1', IntToStr(AmsCleanupOld(Dir)));
+  Check('Baum loeschen', AmsDeleteTree(Dir) and not DirectoryExists(Dir));
+end;
+
+{ ------------------------------------------------------------------- ZIP -- }
+
+procedure TestZip;
+var
+  Dir: string;
+  L: TStringList;
+  Z: TZipper;
+  S: string;
+begin
+  Section('ZIP');
+  Dir := gTmp + 'amsapi_zip\';
+  AmsDeleteTree(Dir);
+  AmsWriteFileRaw(Dir + 'src\plugin.ini', 'Name=X');
+  AmsWriteFileRaw(Dir + 'src\sub\a.txt', 'A');
+  Check('packen', AmsZipCreate(Dir + 'src', Dir + 'x.zip'));
+  L := TStringList.Create;
+  try
+    Check('auflisten', AmsZipList(Dir + 'x.zip', L));
+    CheckEq('Eintraege', 'plugin.ini,sub\a.txt', L.CommaText);
+    L.Clear;
+    Check('entpacken', AmsZipExtract(Dir + 'x.zip', Dir + 'out', L));
+    Check('Inhalt da', AmsReadFileRaw(Dir + 'out\sub\a.txt', S) and (S = 'A'));
+  finally
+    L.Free;
+  end;
+
+  { Zip Slip: ein Eintrag zeigt aus dem Zielordner heraus }
+  AmsWriteFileRaw(Dir + 'boese.txt', 'BOESE');
+  Z := TZipper.Create;
+  try
+    Z.FileName := Dir + 'slip.zip';
+    Z.Entries.AddFileEntry(Dir + 'boese.txt', 'harmlos.txt');
+    Z.Entries.AddFileEntry(Dir + 'boese.txt', '../../boese-draussen.txt');
+    Z.ZipAllFiles;
+  finally
+    Z.Free;
+  end;
+  Check('Zip Slip abgelehnt', not AmsZipExtract(Dir + 'slip.zip', Dir + 'slip\ziel'));
+  Check('mit Begruendung', Pos('heraus', AmsLastError) > 0, AmsLastError);
+  Check('nichts entpackt - auch nicht das Harmlose',
+        not FileExists(Dir + 'slip\ziel\harmlos.txt'));
+  Check('nichts draussen', not FileExists(Dir + 'boese-draussen.txt'));
+  AmsDeleteTree(Dir);
+end;
+
+{ ----------------------------------------------------------- INI bearbeiten }
+
+procedure TestIniDoc;
+var
+  Doc, Old: TAmsIniDoc;
+  E: TAmsIniEntry;
+  T: string;
+  i: Integer;
+begin
+  Section('INI bearbeiten (Kommentare bleiben)');
+  Doc := TAmsIniDoc.Create;
+  Old := TAmsIniDoc.Create;
+  try
+    Doc.LoadFromText(
+      'Name=X'#13#10 +
+      'Version=1.0.0'#13#10 +
+      #13#10 +
+      '; ======================'#13#10 +
+      ';  Abschnitt fuer Farben'#13#10 +
+      '; ======================'#13#10 +
+      '[Farben]'#13#10 +
+      '; Hintergrund des Fensters'#13#10 +
+      ';   als #RRGGBB'#13#10 +
+      'Hinten = #FFFFFF'#13#10 +
+      #13#10 +
+      'Vorn=#000000'#13#10 +
+      '[Leer]'#13#10);
+    CheckEq('Eintraege', '4', IntToStr(Doc.Count));
+    i := Doc.IndexOf('farben', 'HINTEN');
+    Check('Suche case-insensitiv', i >= 0);
+    E := Doc.Entry(i);
+    CheckEq('Wert getrimmt', '#FFFFFF', E.Value);
+    CheckEq('Beschreibung aus dem Kommentar',
+            'Hintergrund des Fensters'#10'  als #RRGGBB', E.Comment);
+    CheckEq('Leerzeile trennt die Beschreibung', '',
+            Doc.Entry(Doc.IndexOf('Farben', 'Vorn')).Comment);
+    CheckEq('Abschnittskommentar ohne Trennlinien', ' Abschnitt fuer Farben',
+            Doc.SectionComment('Farben'));
+    Check('Wert setzen', Doc.SetValue('Farben', 'Hinten', '#FFF4C2'));
+    Check('gleicher Wert ist keine Aenderung',
+          not Doc.SetValue('Farben', 'Hinten', '#FFF4C2'));
+    T := Doc.Text;
+    Check('Schreibweise "Hinten = " bleibt', Pos('Hinten = #FFF4C2', T) > 0);
+    Check('Kommentare bleiben', Pos(';   als #RRGGBB', T) > 0);
+    Doc.SetValue('Farben', 'Rahmen', '#CCCCCC');
+    Check('neuer Schluessel im Abschnitt, nicht am Dateiende',
+          Pos('Vorn=#000000'#13#10'Rahmen=#CCCCCC'#13#10'[Leer]', Doc.Text) > 0,
+          Doc.Text);
+    Doc.SetValue('Neu', 'A', '1');
+    CheckEq('neuer Abschnitt', '1', Doc.GetValue('Neu', 'A'));
+    Doc.SetValue('', 'Module', 'X.bpl');
+    Check('Kopf-Schluessel vor dem ersten Abschnitt',
+          Pos('Version=1.0.0'#13#10'Module=X.bpl', Doc.Text) > 0, Doc.Text);
+
+    Doc.LoadFromText(#$EF#$BB#$BF'A=1'#10'B=2'#10);
+    Doc.SetValue('', 'A', '3');
+    CheckEq('BOM und LF bleiben', #$EF#$BB#$BF'A=3'#10'B=2'#10, Doc.Text);
+
+    { Benutzerwerte in die neue Fassung uebernehmen }
+    Doc.LoadFromText('Name=X'#13#10'Version=2.0.0'#13#10'[Info]'#13#10 +
+                     'Title=Neu'#13#10'[Opt]'#13#10'; Farbe'#13#10 +
+                     'Farbe=blau'#13#10'Neu=1'#13#10);
+    Old.LoadFromText('Name=X'#13#10'Version=1.0.0'#13#10'[Info]'#13#10 +
+                     'Title=Alt'#13#10'[Opt]'#13#10'Farbe=rot'#13#10 +
+                     '[Patch]'#13#10'bb.Enabled=0'#13#10);
+    CheckEq('zwei Werte uebernommen', '2',
+            IntToStr(AmsIniMergeUserValues(Doc, Old, AMS_PACKAGE_OWNED)));
+    CheckEq('Wert des Anwenders', 'rot', Doc.GetValue('Opt', 'Farbe'));
+    CheckEq('neuer Schluessel bleibt', '1', Doc.GetValue('Opt', 'Neu'));
+    CheckEq('Version vom Paket', '2.0.0', Doc.GetValue('', 'Version'));
+    CheckEq('[Info] vom Paket', 'Neu', Doc.GetValue('Info', 'Title'));
+    CheckEq('eigene Zeile uebernommen', '0', Doc.GetValue('Patch', 'bb.Enabled'));
+    Check('Kommentar der neuen Fassung bleibt', Pos('; Farbe', Doc.Text) > 0);
+    Check('Muster .Version', AmsIniKeyMatches('', 'Version', ['.Version']));
+    Check('Muster .Version nicht im Abschnitt',
+          not AmsIniKeyMatches('Opt', 'Version', ['.Version']));
+    Check('Muster Info.*', AmsIniKeyMatches('info', 'Irgendwas', ['Info.*']));
+  finally
+    Old.Free;
+    Doc.Free;
+  end;
+end;
+
+{ ---------------------------------------------------- Katalog, Versionen -- }
+
+procedure TestStore;
+var
+  L: TAmsPluginList;
+  P: TAmsPluginInfo;
+  O, R, Pa: string;
+begin
+  Section('Plugin-Katalog und Versionen');
+  Check('1.2.10 > 1.2.9', AmsCompareVersions('1.2.10', '1.2.9') > 0);
+  Check('v1.0 = 1.0.0', AmsCompareVersions('v1.0', '1.0.0') = 0);
+  Check('Vorabversion kleiner', AmsCompareVersions('1.0.0-beta', '1.0.0') < 0);
+  Check('beta.2 > beta.1', AmsCompareVersions('1.0.0-beta.2', '1.0.0-beta.1') > 0);
+  Check('2 > 1.9.9', AmsCompareVersions('2', '1.9.9') > 0);
+  Check('leer < 0.1', AmsCompareVersions('', '0.1') < 0);
+
+  Check('github:o/r', AmsParseRepoSpec('github:aizpun-flowtech/amsapi', O, R, Pa) and
+        (O = 'aizpun-flowtech') and (R = 'amsapi') and (Pa = ''));
+  Check('URL mit .git', AmsParseRepoSpec('https://github.com/o/r.git', O, R, Pa) and
+        (R = 'r'));
+  Check('URL aus dem Browser mit Pfad',
+        AmsParseRepoSpec('https://github.com/o/r/tree/main/samples/X', O, R, Pa) and
+        (Pa = 'samples/X'), Pa);
+  Check('anderes Schema abgelehnt', not AmsParseRepoSpec('gitlab:o/r', O, R, Pa));
+
+  L := TAmsPluginList.Create;
+  try
+    CheckEq('Katalog: drei gueltige Eintraege', '3', IntToStr(AmsParseCatalog(
+      '; Kopf'#13#10 +
+      '[Hello]'#13#10'Repo=github:o/r'#13#10'Path=/samples/Hello/'#13#10 +
+      '[Fest]'#13#10'Repo=github:o/r'#13#10'Tag=v1.2.0'#13#10 +
+      'Sha256=ABCDEF'#13#10 +
+      '[Server]'#13#10'Base=plugins/Server/'#13#10'Title=Vom Server'#13#10 +
+      '[..]'#13#10'Base=x'#13#10 +
+      '[OhneQuelle]'#13#10'Title=nix'#13#10,
+      'https://intranet/ams/katalog.ini', L)));
+    P := L.Find('Hello');
+    Check('Hello gefunden', P <> nil);
+    if P <> nil then
+    begin
+      CheckEq('Paket aus dem neuesten Release',
+        'https://github.com/o/r/releases/latest/download/Hello.zip', P.PackageUrl);
+      CheckEq('Metadaten aus dem Release',
+        'https://github.com/o/r/releases/latest/download/Hello.ini', P.MetaUrl);
+      CheckEq('README roh aus dem Repo',
+        'https://raw.githubusercontent.com/o/r/HEAD/samples/Hello/README.md',
+        P.ReadmeUrl);
+      CheckEq('Links in die Repo-Ansicht',
+        'https://github.com/o/r/blob/HEAD/samples/Hello/', P.LinkBase);
+      Check('nicht installiert', P.State = psAvailable);
+    end;
+    P := L.Find('Fest');
+    if P <> nil then
+    begin
+      CheckEq('feste Version',
+        'https://github.com/o/r/releases/download/v1.2.0/Fest.zip', P.PackageUrl);
+      CheckEq('Pruefsumme klein', 'abcdef', P.Sha256);
+    end;
+    P := L.Find('Server');
+    if P <> nil then
+    begin
+      CheckEq('Base relativ zum Katalog',
+        'https://intranet/ams/plugins/Server/Server.zip', P.PackageUrl);
+      CheckEq('Titel aus dem Katalog', 'Vom Server', P.Title);
+      AmsApplyMeta(P, 'Version=1.5.0'#13#10'[Info]'#13#10'Title=Server-Plugin'#13#10 +
+                   'Description=Zeile 1\nZeile 2'#13#10'Icon=img/logo.png'#13#10, False);
+      CheckEq('Version aus der plugin.ini', '1.5.0', P.AvailableVersion);
+      CheckEq('Titel aus [Info] gewinnt', 'Server-Plugin', P.Title);
+      CheckEq('\n wird Zeilenumbruch', 'Zeile 1'#10'Zeile 2', P.Description);
+      CheckEq('Bild relativ zur Quelle',
+        'https://intranet/ams/plugins/Server/img/logo.png', P.IconUrl);
+      P.Installed := True;
+      P.InstalledVersion := '1.4.0';
+      Check('Update erkannt', P.State = psUpdate);
+      P.InstalledVersion := '1.5.0';
+      Check('aktuell', P.State = psInstalled);
+    end;
+    Check('ungueltiger Ordnername uebersprungen', L.Find('..') = nil);
+  finally
+    L.Free;
+  end;
+
+  L := TAmsPluginList.Create;
+  try
+    AmsParseCatalog('[Lokal]'#13#10'Base=Lokal\'#13#10,
+                    'C:\Server\Katalog\katalog.ini', L);
+    P := L.Find('Lokal');
+    if P <> nil then
+      CheckEq('Base relativ zu einem Katalog auf Platte',
+              'C:\Server\Katalog\Lokal\Lokal.zip', P.PackageUrl)
+    else
+      Check('Base relativ zu einem Katalog auf Platte', False);
+  finally
+    L.Free;
+  end;
+end;
+
+{ -------------------------------------------- Installieren / Entfernen --- }
+
+procedure TestApply;
+var
+  Dir, Q, PDir, BDir: string;
+  Op: TAmsApplyOp;
+  Ops: TAmsApplyOps;
+  Done: Boolean;
+  S: string;
+begin
+  Section('Installieren und Entfernen (Warteschlange)');
+  Dir := gTmp + 'amsapi_apply\';
+  AmsDeleteTree(Dir);
+  AmsForceDir(Dir + 'plugins');
+  AmsWriteFileRaw(Dir + 'stage\P\plugin.ini', 'Name=P'#13#10'Module=P.bpl'#13#10);
+  AmsWriteFileRaw(Dir + 'stage\P\P.bpl', 'V1');
+
+  Op.Action := aaInstall;
+  Op.Name := 'P';
+  Op.Source := Dir + 'stage\P';
+  Check('installieren', AmsApplyOp(Dir + 'plugins', Dir + 'backup', Op), Op.Message);
+  Check('Datei da', AmsReadFileRaw(Dir + 'plugins\P\P.bpl', S) and (S = 'V1'));
+
+  AmsWriteFileRaw(Dir + 'plugins\P\anwender.dat', 'MEINS');
+  AmsWriteFileRaw(Dir + 'stage\P\P.bpl', 'V2');
+  Check('aktualisieren', AmsApplyOp(Dir + 'plugins', Dir + 'backup', Op), Op.Message);
+  Check('neue Fassung', AmsReadFileRaw(Dir + 'plugins\P\P.bpl', S) and (S = 'V2'));
+  Check('Datei des Anwenders bleibt', FileExists(Dir + 'plugins\P\anwender.dat'));
+  Check('Sicherung angelegt', DirectoryExists(Dir + 'backup'));
+
+  AmsWriteFileRaw(Dir + 'neu.ini', 'Name=P'#13#10'Module=P.bpl'#13#10'X=1'#13#10);
+  Op.Action := aaConfig;
+  Op.Source := Dir + 'neu.ini';
+  Check('Einstellungen schreiben', AmsApplyOp(Dir + 'plugins', Dir + 'backup', Op));
+  CheckEq('plugin.ini ersetzt', '1', AmsIniValue(Dir + 'plugins\P\plugin.ini', 'X', ''));
+
+  Op.Name := '..\..\Windows';
+  Op.Action := aaInstall;
+  Check('fremder Pfad abgelehnt', not AmsApplyOp(Dir + 'plugins', '', Op));
+  Check('mit Begruendung', Pos('Ungueltiger', Op.Message) > 0, Op.Message);
+
+  Op.Name := 'Fehlt';
+  Op.Source := Dir + 'gibtsnicht';
+  Check('fehlende Bereitstellung abgelehnt',
+        not AmsApplyOp(Dir + 'plugins', '', Op));
+  Check('nichts angelegt', not DirectoryExists(Dir + 'plugins\Fehlt'));
+
+  Op.Action := aaRemove;
+  Op.Name := 'P';
+  Op.Source := '';
+  Check('entfernen', AmsApplyOp(Dir + 'plugins', Dir + 'backup', Op));
+  Check('Ordner weg', not DirectoryExists(Dir + 'plugins\P'));
+
+  { als Warteschlange, wie fuer den Helfer }
+  Q := Dir + 'q.ini';
+  SetLength(Ops, 2);
+  Ops[0].Action := aaInstall;
+  Ops[0].Name := 'P';
+  Ops[0].Source := Dir + 'stage\P';
+  Ops[1].Action := aaRemove;
+  Ops[1].Name := 'GibtsNicht';
+  Ops[1].Source := '';
+  Check('Warteschlange schreiben', AmsQueueWrite(Q, Dir + 'plugins', Dir + 'backup', Ops));
+  Check('abarbeiten', AmsApplyQueueFile(Q), AmsLastError);
+  Check('Ergebnisse gelesen', AmsQueueRead(Q, PDir, BDir, Ops, Done) and Done and
+        Ops[0].Ok and Ops[1].Ok);
+  Check('zweimal geht nicht', not AmsApplyQueueFile(Q));
+  CheckEq('Helfer-Exitcode bei unlesbarer Datei', '2',
+          IntToStr(AmsApplyHelperRun(Dir + 'gibtsnicht.ini')));
+  AmsDeleteTree(Dir);
+end;
+
+{ ---------------------------------------------------------- Prozesse ----- }
+
+procedure TestProcess;
+var
+  Code: DWORD;
+begin
+  Section('Prozesse und Rueckfragen');
+  CheckEq('Argument ohne Leerzeichen', 'abc', AmsQuoteArg('abc'));
+  CheckEq('mit Leerzeichen', '"a b"', AmsQuoteArg('a b'));
+  CheckEq('Backslash am Ende', '"C:\x y\\"', AmsQuoteArg('C:\x y\'));
+  CheckEq('Anfuehrungszeichen', '"say \"hi\""', AmsQuoteArg('say "hi"'));
+  CheckEq('eigenes Programm', LowerCase(ExtractFileName(ParamStr(0))),
+          LowerCase(ExtractFileName(AmsHostExe)));
+  Check('Programm laufen lassen und warten',
+        AmsRunAndWait(AmsExpandEnv('%SystemRoot%\System32\cmd.exe'), '/c exit 3',
+                      False, False, Code, 10000), AmsLastError);
+  CheckEq('Exitcode', '3', IntToStr(Code));
+  Check('fehlendes Programm', not AmsRunAndWait(gTmp + 'gibtsnicht.exe', '',
+        False, False, Code));
+  CheckEq('Neustart-Helfer ohne Datei', '1',
+          IntToStr(AmsRestartHelperRun(gTmp + 'gibtsnicht.ini')));
+
+  AmsDialogsSilent := True;
+  AmsDialogCount := 0;
+  CheckEq('stille Frage liefert den Standard', '1',
+          IntToStr(AmsTaskDialog(0, 'T', 'M', '', ['a', 'b'], 1)));
+  AmsDialogsSilentAnswer := 0;
+  CheckEq('stille Frage mit Vorgabe', '0',
+          IntToStr(AmsTaskDialog(0, 'T', 'M', '', ['a', 'b'], 1)));
+  AmsDialogsSilentAnswer := -2;
+  CheckEq('Fragen gezaehlt', '2', IntToStr(AmsDialogCount));
+  AmsDialogsSilent := False;
+end;
+
+
 begin
   gTmp := IncludeTrailingPathDelimiter(GetTempDir);
   AmsSetLogFile(gTmp + 'amsapi_unittests.log');
@@ -876,6 +1380,13 @@ begin
   TestHookImport;
   TestRecorder;
   TestBind;
+  TestMarkdown;
+  TestFiles;
+  TestZip;
+  TestIniDoc;
+  TestStore;
+  TestApply;
+  TestProcess;
 
   WriteLn;
   WriteLn(Format('%d Pruefungen, %d Fehlschlaege.', [gRun, gFail]));
