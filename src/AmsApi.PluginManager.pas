@@ -901,21 +901,28 @@ var
   P: TAmsPluginInfo;
   Ops: TAmsApplyOps;
   Err, Extra, Title: WideString;
+  Name: string;
 begin
   P := SelectedInfo;
   if (P = nil) or not P.Installed or gStaging or gApplying then Exit;
+  { ALLES jetzt kopieren: waehrend der Rueckfrage laufen Nachrichten weiter,
+    ein fertiger Katalogabruf ersetzt gPlugins - danach zeigt P ins Leere
+    (im echten AMS so passiert: Name kam leer beim Helfer an). }
+  Name := P.Name;
   Title := W(P.DisplayTitle);
+  P := nil;
   Extra := 'Der Ordner wird gesichert (' + WideString(gOpts.Store.CacheDir) +
            'backup) und beim nächsten Start von AMS nicht mehr geladen.';
-  if SameText(P.Name, gOpts.SelfName) then
+  if SameText(Name, gOpts.SelfName) then
     Extra := 'Das ist der Plugin Manager selbst. Danach gibt es im Ribbon ' +
              'keinen Knopf mehr dafür – zurück nur durch manuelles Kopieren.' +
              #13#10#13#10 + Extra;
   if AmsTaskDialog(gWin, 'Plugin Manager', Title + ' entfernen?', Extra,
        ['Entfernen', 'Abbrechen'], 1, diWarning) <> 0 then Exit;
+  if gStaging or gApplying or (gWin = 0) then Exit;
   SetLength(Ops, 1);
   Ops[0].Action := aaRemove;
-  Ops[0].Name := P.Name;
+  Ops[0].Name := Name;
   Ops[0].Source := '';
   if not ApplyOps(Ops, Err) then
   begin
@@ -925,7 +932,7 @@ begin
     UpdateButtons;
     Exit;
   end;
-  MarkChanged(P.Name);
+  MarkChanged(Name);
   RescanInstalled;
   SetStatus(Title + ' wurde entfernt. Wirksam nach dem Neustart von AMS.');
   AskRestart(Title + ' wurde entfernt.');

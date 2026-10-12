@@ -510,6 +510,15 @@ mehr — die Prüfung gehört ins Skript (`if (WItem == null) ...`).
     Komponenten über `FindComponent(Name)` wieder. Eine Umbenennung macht sie
     für ihn unauffindbar — `AmsSetProp` lehnt `Name` deshalb ab und verlangt
     ausdrücklich `AmsRenameComponent`.
+16. **Jeder Unterordner von `BIN\plugins` muss eine `plugin.ini` haben.** AMS
+    durchsucht beim Start jeden Unterordner; fehlt die Beschreibung, bricht
+    es den **ganzen Start** ab: „kann nicht gestartet werden: Fehler beim
+    Laden der Plugins: Plugin descriptor file not found for Doom“. Ein leerer
+    Ordner oder einer mit nur `.old`-Resten reicht dafür. Am 12.10.2026 so
+    passiert. Ein Plugin wird deshalb immer ganz entfernt (geladene BPLs aus
+    `BIN\plugins` hinaus verschieben, nicht im Ordner umbenennen) — siehe
+    `AmsApi.PluginApply`. Auch Probe- oder Hilfsordner haben dort nichts
+    verloren.
 
 ---
 

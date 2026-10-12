@@ -31,5 +31,14 @@ begin
             [ParamStr(1), ParamStr(2), BoolToStr(AmsIsElevated, True)]);
   if ParamStr(1) = '--apply' then Halt(AmsApplyHelperRun(ParamStr(2)));
   if ParamStr(1) = '--restart' then Halt(AmsRestartHelperRun(ParamStr(2)));
+  { Notfall von Hand (als Administrator): Ordner ohne plugin.ini, die nur
+    .old-Reste enthalten und AMS am Start hindern, entfernen.
+      AmsPluginApply.exe --repair "C:\Program Files (x86)\assfinet ams.5\BIN\plugins" }
+  if ParamStr(1) = '--repair' then
+  begin
+    AmsLogFmt('Repariert: %d Ordner', [AmsRepairPluginsDir(ParamStr(2),
+              AmsLocalDataDir('AmsPluginManager') + 'backup')]);
+    Halt(0);
+  end;
   Halt(64);
 end.

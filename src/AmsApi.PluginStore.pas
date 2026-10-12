@@ -907,6 +907,24 @@ end;
 
 { ------------------------------------------------------- GitHub-API (Token) }
 
+{ Klartext fuer "404 auf releases/...": fast immer fehlt das Release oder
+  das Asset darin. Ohne Token kommt bei privaten Repos ebenfalls 404. }
+function NoReleaseText(const AConfig: TAmsStoreConfig;
+  AInfo: TAmsPluginInfo): string;
+var
+  Rel: string;
+begin
+  if AInfo.GhTag <> '' then Rel := 'Release ' + AInfo.GhTag
+  else Rel := 'neueste Release';
+  Result := Format('Im Repo github.com/%s/%s fehlt das %s oder darin %s. ' +
+    'Anlegen mit: gh release create v1.0.0 build\release\*.zip ' +
+    'build\release\*.ini', [AInfo.GhOwner, AInfo.GhRepo, Rel,
+    AInfo.PackageAsset]);
+  if AConfig.Token = '' then
+    Result := Result + ' (Bei einem privaten Repo: Token unter [GitHub] ' +
+              'eintragen.)';
+end;
+
 { Release ueber die API holen und die Asset-Adressen eintragen. }
 function ResolveApiAssets(const AConfig: TAmsStoreConfig;
   AInfo: TAmsPluginInfo): Boolean;
@@ -1003,11 +1021,8 @@ begin
   else
   begin
     AInfo.MetaError := AmsLastError;
-    { GitHub sagt bei privaten Repos ohne Token 404, nicht 401 }
-    if (AInfo.Kind = skGitHub) and (AConfig.Token = '') and
-       (Pos('HTTP 404', AInfo.MetaError) > 0) then
-      AInfo.MetaError := AInfo.MetaError + ' - kein Release mit ' +
-        AInfo.MetaAsset + ', oder privates Repo ohne Token ([GitHub] Token=)';
+    if (AInfo.Kind = skGitHub) and (Pos('HTTP 404', AInfo.MetaError) > 0) then
+      AInfo.MetaError := NoReleaseText(AConfig, AInfo);
     Note(ALog, Format('%s: keine Metadaten - %s', [AInfo.Name, AInfo.MetaError]));
   end;
 
@@ -1083,7 +1098,8 @@ begin
         else Note(ALog, Format('Katalog nicht erreichbar: %s - %s',
                                [Src, AmsLastError]));
       end;
-      if not Got then
+      { beim allerersten Oeffnen gibt es noch keinen - das ist kein Fehler }
+      if not Got and FileExists(CacheName) then
         Got := AmsReadFileRaw(CacheName, Data, CATALOG_MAX) and (Data <> '');
       if not Got then Continue;
       n := AmsParseCatalog(AmsStripBom(Data), Src, Catalog);
@@ -1169,7 +1185,7 @@ var
   Zip, Stage, Root, Src, Hash, IniName, IniModule, Old: string;
   NewDoc, OldDoc: TAmsIniDoc;
   Merged: Integer;
-  FromDir: Boolean;
+  FromDir, Loaded: Boolean;
 begin
   Result := False;
   AStageDir := '';
@@ -1205,13 +1221,21 @@ begin
     begin
       if AInfo.ApiPackageUrl = '' then ResolveApiAssets(AConfig, AInfo);
       if AInfo.ApiPackageUrl <> '' then
-      begin
-        if not AmsStoreDownload(AConfig, AInfo.ApiPackageUrl, Zip,
-                                'application/octet-stream') then Exit;
-      end
-      else if not AmsStoreDownload(AConfig, Src, Zip) then Exit;
+        Loaded := AmsStoreDownload(AConfig, AInfo.ApiPackageUrl, Zip,
+                                   'application/octet-stream')
+      else
+        Loaded := AmsStoreDownload(AConfig, Src, Zip);
     end
-    else if not AmsStoreDownload(AConfig, Src, Zip) then Exit;
+    else
+      Loaded := AmsStoreDownload(AConfig, Src, Zip);
+    if not Loaded then
+    begin
+      { "HTTP 404 ...releases/latest/download/X.zip" sagt dem Anwender
+        nichts - gemeint ist fast immer: es gibt (noch) kein Release }
+      if (AInfo.Kind = skGitHub) and (Pos('HTTP 404', AmsLastError) > 0) then
+        AmsFail(NoReleaseText(AConfig, AInfo));
+      Exit;
+    end;
 
     if AInfo.Sha256 <> '' then
     begin

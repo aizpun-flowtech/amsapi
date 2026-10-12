@@ -36,6 +36,11 @@ var
   { Antwort der stillen Fragen: -2 = jeweils ADefault, sonst dieser Index
     (-1 = Abbruch). Fuer Tests. }
   AmsDialogsSilentAnswer: Integer = -2;
+  { So lange verteilt eine stille Frage Nachrichten, bevor sie antwortet -
+    wie ein echter Dialog, der offen steht, waehrend der Anwender liest.
+    Ohne das findet kein Test, was waehrend einer Rueckfrage passieren
+    kann (im echten AMS: Liste ersetzt, Zeiger ins Leere). Fuer Tests. }
+  AmsDialogsSilentPumpMs: Integer = 0;
   { Zaehlt die Fragen - auch die stillen. Fuer Tests. }
   AmsDialogCount: Integer = 0;
 
@@ -137,11 +142,25 @@ var
   Text: WideString;
   Style: UINT;
   R: Integer;
+  Start: QWord;
+  Msg: TMsg;
 begin
   Inc(AmsDialogCount);
   n := Length(AButtons);
   if AmsDialogsSilent then
   begin
+    if AmsDialogsSilentPumpMs > 0 then
+    begin
+      Start := GetTickCount64;
+      repeat
+        while PeekMessageW(Msg, 0, 0, 0, PM_REMOVE) do
+        begin
+          TranslateMessage(Msg);
+          DispatchMessageW(Msg);
+        end;
+        Sleep(10);
+      until GetTickCount64 - Start >= QWord(AmsDialogsSilentPumpMs);
+    end;
     if AmsDialogsSilentAnswer >= -1 then Exit(AmsDialogsSilentAnswer);
     Exit(ADefault);
   end;

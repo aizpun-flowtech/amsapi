@@ -428,10 +428,20 @@ begin
   Cmd(IDC_PM_REMOVE);
   WaitIdle;
   Check('Abbrechen laesst es stehen', DirectoryExists(T + 'plugins\Alt'));
+  { Wie im echten AMS gesehen: waehrend die Rueckfrage offen steht, kommt der
+    Katalogabruf zurueck und ersetzt die Liste. Der Name darf dabei nicht
+    verloren gehen (frueher: "Ungueltiger Pluginname: """). }
+  Cmd(IDC_PM_REFRESH);
+  AmsDialogsSilentPumpMs := 1500;   { "Anwender liest" - Nachrichten laufen }
   AmsDialogsSilentAnswer := 0;      { "Entfernen" }
   Cmd(IDC_PM_REMOVE);
   WaitIdle;
   AmsDialogsSilentAnswer := -2;
+  AmsDialogsSilentPumpMs := 0;
+  Check('Katalog kam waehrend der Rueckfrage zurueck', not AmsPluginManagerBusy);
+  Check('kein leerer Name beim Entfernen',
+        Pos('Ungueltiger', string(AmsPluginManagerStatus)) = 0,
+        AmsWideToUtf8(AmsPluginManagerStatus));
   Check('Alt entfernt', not DirectoryExists(T + 'plugins\Alt'));
   Saved := False;
   L := TStringList.Create;
@@ -542,6 +552,35 @@ begin
   Cmd(IDC_PM_REFRESH);
   Check('Neu laden fertig', WaitIdle);
   CheckEq('weiter drei Plugins', '3', IntToStr(AmsPluginManagerCount));
+end;
+
+{ Wie im echten AMS: Entfernen, waehrend die Plugin-DLL geladen ist. Die
+  erste Fassung liess einen Ordner ohne plugin.ini stehen - und AMS startete
+  danach nicht mehr ("Plugin descriptor file not found"). }
+procedure TestRemoveLocked;
+var
+  Lk: HMODULE;
+begin
+  Section('Entfernen, waehrend die BPL geladen ist');
+  CopyFileW(PWideChar(WideString(AmsExpandEnv('%SystemRoot%\SysWOW64\atl.dll'))),
+            PWideChar(WideString(T + 'plugins\Alpha\Hilfe.dll')), False);
+  Lk := LoadLibraryExW(PWideChar(WideString(T + 'plugins\Alpha\Hilfe.dll')), 0,
+                       DONT_RESOLVE_DLL_REFERENCES);
+  Check('DLL des Plugins geladen', Lk <> 0);
+  { Rest, wie ihn die erste Fassung hinterliess - wird mit repariert }
+  Put(T + 'plugins\Rest\Rest.bpl.E3155C0.old', 'ALT');
+  AmsPluginManagerSelect('Alpha');
+  WaitIdle;
+  AmsDialogsSilentAnswer := 0;
+  Cmd(IDC_PM_REMOVE);
+  WaitIdle;
+  AmsDialogsSilentAnswer := -2;
+  Check('Alpha-Ordner ganz weg', not DirectoryExists(T + 'plugins\Alpha'),
+        AmsWideToUtf8(AmsPluginManagerStatus));
+  Check('Rest der ersten Fassung repariert', not DirectoryExists(T + 'plugins\Rest'));
+  Check('kein Ordner ohne plugin.ini mehr', not DirectoryExists(T + 'plugins\Alpha') and
+        not DirectoryExists(T + 'plugins\Rest'));
+  if Lk <> 0 then FreeLibrary(Lk);
 end;
 
 procedure TestClose;
@@ -659,6 +698,7 @@ begin
   TestRemove;
   TestSettings;
   TestFilter;
+  TestRemoveLocked;
   TestClose;
   TestHelper;
   WriteLn;

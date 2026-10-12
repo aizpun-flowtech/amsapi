@@ -1256,6 +1256,8 @@ var
   Ops: TAmsApplyOps;
   Done: Boolean;
   S: string;
+  Lock, Lock2: HMODULE;
+  L: TStringList;
 begin
   Section('Installieren und Entfernen (Warteschlange)');
   Dir := gTmp + 'amsapi_apply\';
@@ -1300,6 +1302,55 @@ begin
   Check('entfernen', AmsApplyOp(Dir + 'plugins', Dir + 'backup', Op));
   Check('Ordner weg', not DirectoryExists(Dir + 'plugins\P'));
 
+  { Entfernen, waehrend die BPL geladen ist - im echten AMS liess die erste
+    Fassung dabei einen Ordner ohne plugin.ini stehen, und AMS startete
+    nicht mehr ("Plugin descriptor file not found"). }
+  AmsWriteFileRaw(Dir + 'stage\Q\plugin.ini', 'Name=Q'#13#10'Module=Q.bpl'#13#10);
+  CopyFileW(PWideChar(WideString(AmsExpandEnv('%SystemRoot%\SysWOW64\atl.dll'))),
+            PWideChar(WideString(Dir + 'stage\Q\Q.bpl')), False);
+  Op.Action := aaInstall;
+  Op.Name := 'Q';
+  Op.Source := Dir + 'stage\Q';
+  Check('Q installiert', AmsApplyOp(Dir + 'plugins', Dir + 'backup', Op), Op.Message);
+  Lock := LoadLibraryExW(PWideChar(WideString(Dir + 'plugins\Q\Q.bpl')), 0,
+                         DONT_RESOLVE_DLL_REFERENCES);
+  Check('Q.bpl geladen', Lock <> 0);
+  Op.Action := aaRemove;
+  Check('entfernen trotz geladener BPL', AmsApplyOp(Dir + 'plugins',
+        Dir + 'backup', Op), Op.Message);
+  Check('Ordner GANZ weg - kein Rest ohne plugin.ini',
+        not DirectoryExists(Dir + 'plugins\Q'));
+  { freigeben - sonst gaebe der Lader beim naechsten LoadLibraryEx am selben
+    Pfad nur dieses Modul zurueck, statt die neue Datei zu mappen }
+  if Lock <> 0 then FreeLibrary(Lock);
+  Lock := 0;
+
+  { Ohne Papierkorb (wie auf einem anderen Laufwerk) wird geloescht - die
+    geladene BPL geht nicht, dann bleibt das Plugin gueltig stehen }
+  Op.Action := aaInstall;
+  Check('Q wieder installiert', AmsApplyOp(Dir + 'plugins', Dir + 'backup', Op),
+        Op.Message);
+  Lock2 := LoadLibraryExW(PWideChar(WideString(Dir + 'plugins\Q\Q.bpl')), 0,
+                          DONT_RESOLVE_DLL_REFERENCES);
+  Op.Action := aaRemove;
+  Check('ohne Papierkorb abgelehnt', not AmsApplyOp(Dir + 'plugins', '', Op));
+  Check('mit Begruendung', Pos('AMS beenden', Op.Message) > 0, Op.Message);
+  Check('plugin.ini steht noch', FileExists(Dir + 'plugins\Q\plugin.ini'));
+  if Lock2 <> 0 then FreeLibrary(Lock2);
+  if Lock <> 0 then FreeLibrary(Lock);
+  Check('jetzt geht es', AmsApplyOp(Dir + 'plugins', Dir + 'backup', Op) and
+        not DirectoryExists(Dir + 'plugins\Q'), Op.Message);
+
+  { Reste der ersten Fassung: Ordner nur mit .old - und einer, der nicht
+    von uns ist }
+  AmsWriteFileRaw(Dir + 'plugins\Kaputt\Kaputt.bpl.ABC.old', 'x');
+  AmsWriteFileRaw(Dir + 'plugins\Fremd\irgendwas.txt', 'x');
+  CheckEq('ein Rest repariert', '1',
+          IntToStr(AmsRepairPluginsDir(Dir + 'plugins', Dir + 'backup')));
+  Check('Rest weg', not DirectoryExists(Dir + 'plugins\Kaputt'));
+  Check('Fremdes bleibt', FileExists(Dir + 'plugins\Fremd\irgendwas.txt'));
+  AmsDeleteTree(Dir + 'plugins\Fremd');
+
   { als Warteschlange, wie fuer den Helfer }
   Q := Dir + 'q.ini';
   SetLength(Ops, 2);
@@ -1311,6 +1362,14 @@ begin
   Ops[1].Source := '';
   Check('Warteschlange schreiben', AmsQueueWrite(Q, Dir + 'plugins', Dir + 'backup', Ops));
   Check('abarbeiten', AmsApplyQueueFile(Q), AmsLastError);
+  L := TStringList.Create;
+  try
+    AmsListFiles(Dir + 'trash', L, True);
+    CheckEq('Papierkorb geleert, sobald nichts mehr geladen ist', '0',
+            IntToStr(L.Count));
+  finally
+    L.Free;
+  end;
   Check('Ergebnisse gelesen', AmsQueueRead(Q, PDir, BDir, Ops, Done) and Done and
         Ops[0].Ok and Ops[1].Ok);
   Check('zweimal geht nicht', not AmsApplyQueueFile(Q));
